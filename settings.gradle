@@ -1,3 +1,5 @@
+rootProject.name = 'Zygisk-Il2CppDumper'
+
 include ':module'
 
 import org.apache.tools.ant.DirectoryScanner
