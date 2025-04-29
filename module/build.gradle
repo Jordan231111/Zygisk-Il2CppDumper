@@ -9,7 +9,7 @@ apply from: file(rootProject.file('module.gradle'))
 android {
     namespace "zygisk.il2cppdumper"
     compileSdkVersion rootProject.ext.targetSdkVersion
-    ndkVersion '25.2.9519653'
+    ndkVersion '28.1.13356709'
     defaultConfig {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
