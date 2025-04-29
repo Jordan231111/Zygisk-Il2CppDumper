@@ -8,11 +8,11 @@ apply from: file(rootProject.file('module.gradle'))
 
 android {
     namespace "zygisk.il2cppdumper"
-    compileSdkVersion rootProject.ext.targetSdkVersion
+    compileSdk rootProject.ext.targetSdkVersion
     ndkVersion '28.1.13356709'
     defaultConfig {
-        minSdkVersion rootProject.ext.minSdkVersion
-        targetSdkVersion rootProject.ext.targetSdkVersion
+        minSdk rootProject.ext.minSdkVersion
+        targetSdk rootProject.ext.targetSdkVersion
         externalNativeBuild {
             cmake {
                 arguments "-DMODULE_NAME:STRING=$moduleLibraryName"

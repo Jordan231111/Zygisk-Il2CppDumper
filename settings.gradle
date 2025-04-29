@@ -7,4 +7,5 @@ import org.apache.tools.ant.DirectoryScanner
 DirectoryScanner.removeDefaultExclude('**/.gitattributes')
 
 // Enable type-safe project accessors
+// This is incubating but will be stable in Gradle 9.0
 enableFeaturePreview('TYPESAFE_PROJECT_ACCESSORS')
