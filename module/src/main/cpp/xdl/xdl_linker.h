@@ -1,4 +1,4 @@
-// Copyright (c) 2020-2021 HexHacking Team
+// Copyright (c) 2020-2025 HexHacking Team
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -21,8 +21,8 @@
 
 // Created by caikelun on 2021-02-21.
 
-#ifndef IO_HEXHACKING_XDL_LINKER
-#define IO_HEXHACKING_XDL_LINKER
+#ifndef IO_GITHUB_HEXHACKING_XDL_LINKER
+#define IO_GITHUB_HEXHACKING_XDL_LINKER
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,7 +31,7 @@ extern "C" {
 void xdl_linker_lock(void);
 void xdl_linker_unlock(void);
 
-void *xdl_linker_load(const char *filename);
+void *xdl_linker_force_dlopen(const char *filename);
 
 #ifdef __cplusplus
 }

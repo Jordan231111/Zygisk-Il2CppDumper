@@ -1,4 +1,4 @@
-// Copyright (c) 2020-2021 HexHacking Team
+// Copyright (c) 2020-2025 HexHacking Team
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -22,15 +22,15 @@
 // Created by caikelun on 2020-10-04.
 
 //
-// xDL version: 1.2.1
+// xDL version: 2.4.0
 //
 // xDL is an enhanced implementation of the Android DL series functions.
 // For more information, documentation, and the latest version please check:
 // https://github.com/hexhacking/xDL
 //
 
-#ifndef IO_HEXHACKING_XDL
-#define IO_HEXHACKING_XDL
+#ifndef IO_GITHUB_HEXHACKING_XDL
+#define IO_GITHUB_HEXHACKING_XDL
 
 #include <dlfcn.h>
 #include <link.h>
@@ -53,7 +53,7 @@ typedef struct {
 } xdl_info_t;
 
 //
-// Default value for flags in both xdl_open() and xdl_iterate_phdr().
+// Default value for flags in xdl_open(), xdl_addr4(), and xdl_iterate_phdr().
 //
 #define XDL_DEFAULT 0x00
 
@@ -63,6 +63,7 @@ typedef struct {
 #define XDL_TRY_FORCE_LOAD    0x01
 #define XDL_ALWAYS_FORCE_LOAD 0x02
 void *xdl_open(const char *filename, int flags);
+void *xdl_open2(struct dl_phdr_info *info);
 void *xdl_close(void *handle);
 void *xdl_sym(void *handle, const char *symbol, size_t *symbol_size);
 void *xdl_dsym(void *handle, const char *symbol, size_t *symbol_size);
@@ -70,7 +71,9 @@ void *xdl_dsym(void *handle, const char *symbol, size_t *symbol_size);
 //
 // Enhanced dladdr().
 //
+#define XDL_NON_SYM 0x01
 int xdl_addr(void *addr, xdl_info_t *info, void **cache);
+int xdl_addr4(void *addr, xdl_info_t *info, void **cache, int flags);
 void xdl_addr_clean(void **cache);
 
 //

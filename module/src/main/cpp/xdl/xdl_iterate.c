@@ -1,4 +1,4 @@
-// Copyright (c) 2020-2021 HexHacking Team
+// Copyright (c) 2020-2025 HexHacking Team
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -128,11 +128,53 @@ static int xdl_iterate_by_linker_cb(struct dl_phdr_info *info, size_t size, void
   info = &info_fixed;
 
   // fix dlpi_phdr & dlpi_phnum (from memory)
+  //
+  // This is not a bug. Because we cannot obtain dlpi_phdr, we cannot correctly calculate load_bias.
+  // We can only assume that load_bias and base are consistent for now.
   if (NULL == info->dlpi_phdr || 0 == info->dlpi_phnum) {
     ElfW(Ehdr) *ehdr = (ElfW(Ehdr) *)info->dlpi_addr;
     info->dlpi_phdr = (ElfW(Phdr) *)(info->dlpi_addr + ehdr->e_phoff);
     info->dlpi_phnum = ehdr->e_phnum;
   }
+
+#if __ANDROID_API__ <= __ANDROID_API_M__
+  // fix bug when android:extractNativeLibs="false" in Android 6.0
+  char name_fixed[PATH_MAX];
+  if (xdl_util_get_api_level() == __ANDROID_API_M__ && xdl_util_ends_with(info->dlpi_name, ".apk")) {
+    // find .dynamic
+    ElfW(Dyn) *dynamic = NULL;
+    for (size_t i = 0; i < info->dlpi_phnum; i++) {
+      const ElfW(Phdr) *phdr = &(info->dlpi_phdr[i]);
+      if (PT_DYNAMIC == phdr->p_type) {
+        dynamic = (ElfW(Dyn) *)(info->dlpi_addr + phdr->p_vaddr);
+        break;
+      }
+    }
+
+    // add '!/lib/<ABI>/<lib_name>' suffix
+    if (NULL != dynamic) {
+      const char *dynstr = NULL;
+      ssize_t soname_off = -1;
+      for (ElfW(Dyn) *entry = dynamic; entry && entry->d_tag != DT_NULL; entry++) {
+        switch (entry->d_tag) {
+          case DT_STRTAB:
+            dynstr = (const char *)(info->dlpi_addr + entry->d_un.d_ptr);
+            break;
+          case DT_SONAME:
+            soname_off = (ssize_t)entry->d_un.d_val;
+            break;
+          default:
+            break;
+        }
+      }
+      if (NULL != dynstr && soname_off >= 0) {
+        snprintf(name_fixed, sizeof(name_fixed), "%s!/lib/" XDL_UTIL_ABI_STR "/%s", info->dlpi_name,
+                 dynstr + (size_t)soname_off);
+        info->dlpi_name = name_fixed;
+      }
+    }
+  }
+#endif
 
   // fix dlpi_name (from /proc/self/maps)
   if ('/' != info->dlpi_name[0] && '[' != info->dlpi_name[0] && (0 != (flags & XDL_FULL_PATHNAME))) {
@@ -141,6 +183,7 @@ static int xdl_iterate_by_linker_cb(struct dl_phdr_info *info, size_t size, void
     if (UINTPTR_MAX == min_vaddr) return 0;  // ignore this ELF
     uintptr_t base = (uintptr_t)(info->dlpi_addr + min_vaddr);
 
+    // This is not a bug. dlpi_name can only be used during the callback.
     char buf[1024];
     if (0 != xdl_iterate_get_pathname_from_maps(base, buf, sizeof(buf), maps)) return 0;  // ignore this ELF
 
@@ -221,7 +264,8 @@ static int xdl_iterate_by_maps(xdl_iterate_phdr_cb_t cb, void *cb_arg) {
     // Try to find an ELF which loaded by linker.
     uintptr_t base, offset;
     char exec;
-    if (3 != sscanf(line, "%" SCNxPTR "-%*" SCNxPTR " r%*c%cp %" SCNxPTR " ", &base, &exec, &offset)) goto clean;
+    if (3 != sscanf(line, "%" SCNxPTR "-%*" SCNxPTR " r%*c%cp %" SCNxPTR " ", &base, &exec, &offset))
+      goto clean;
 
     if ('-' == exec && 0 == offset) {
       // r--p
@@ -229,8 +273,7 @@ static int xdl_iterate_by_maps(xdl_iterate_phdr_cb_t cb, void *cb_arg) {
       line = (line == buf1 ? buf2 : buf1);
       try_next_line = true;
       continue;
-    }
-    else if (exec == 'x') {
+    } else if (exec == 'x') {
       // r-xp
       char *pathname = NULL;
       if (try_next_line && 0 != offset) {
@@ -270,7 +313,7 @@ static int xdl_iterate_by_maps(xdl_iterate_phdr_cb_t cb, void *cb_arg) {
       if (0 != (r = xdl_iterate_do_callback(cb, cb_arg, base, pathname, NULL))) break;
     }
 
- clean:
+  clean:
     try_next_line = false;
   }
 
