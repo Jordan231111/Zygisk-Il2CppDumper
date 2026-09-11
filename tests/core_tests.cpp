@@ -10,6 +10,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <sys/mman.h>
 #include <unistd.h>
 
 namespace {
@@ -99,8 +100,24 @@ int main() {
     getter[0] = 0x14000000U; // Cycle: bounded branch following must terminate.
     CHECK(!aarch64_lazy_global(code_base, read_code));
     CHECK(!aarch64_lazy_global(code_base + 1, read_code));
-    char temporary[] = "/tmp/il2cpp-tests-XXXXXX";
-    auto* dir = mkdtemp(temporary);
+    std::array<uint32_t, 6> predicate{0xf0000008U, 0xf9410108U, 0xf9400908U,
+                                      0xeb00011fU, 0x1a9f17e0U, 0xd65f03c0U};
+    const auto read_predicate = [&](uintptr_t address, void* target, size_t size) {
+        if (!range_contains(code_base, code_base + sizeof(predicate), address, size))
+            return false;
+        std::memcpy(target,
+                    reinterpret_cast<const std::byte*>(predicate.data()) + address - code_base,
+                    size);
+        return true;
+    };
+    const auto chain = aarch64_vm_thread_chain(code_base, read_predicate);
+    CHECK(chain && chain->global == 0x103200 && chain->offset == 16);
+    predicate[3] ^= 1;
+    CHECK(!aarch64_vm_thread_chain(code_base, read_predicate));
+    predicate[0] = 0x14000000U;
+    CHECK(!aarch64_vm_thread_chain(code_base, read_predicate));
+    auto temporary = (std::filesystem::temp_directory_path() / "il2cpp-tests-XXXXXX").string();
+    auto* dir = mkdtemp(temporary.data());
     CHECK(dir);
     const std::filesystem::path root(dir);
     {
@@ -141,6 +158,19 @@ int main() {
     CHECK(!memory.read<uint32_t>(0));
     CHECK(!memory.read<uint32_t>(1));
     CHECK(!memory.read<uint32_t>(std::numeric_limits<uintptr_t>::max()));
+    const size_t page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+    auto* arena = static_cast<char*>(
+        mmap(nullptr, 2 * page_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    CHECK(arena != MAP_FAILED);
+    auto stale_maps = Maps::read_self();
+    CHECK(mprotect(arena, page_size, PROT_READ | PROT_WRITE) == 0);
+    std::memcpy(arena, "newly committed", 16);
+    CHECK(memory.string(reinterpret_cast<uintptr_t>(arena), stale_maps) == "newly committed");
+    arena[page_size - 1] = 0;
+    CHECK(memory.string(reinterpret_cast<uintptr_t>(arena + page_size - 1), stale_maps) == "");
+    std::memset(arena, 'x', 8);
+    CHECK(!memory.string(reinterpret_cast<uintptr_t>(arena), stale_maps, 8));
+    CHECK(munmap(arena, 2 * page_size) == 0);
 #endif
     std::cout << checks << " checks passed\n";
 }

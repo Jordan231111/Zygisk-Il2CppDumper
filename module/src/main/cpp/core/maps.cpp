@@ -1,6 +1,7 @@
 #include "maps.h"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <charconv>
 #include <fcntl.h>
@@ -165,5 +166,32 @@ bool Memory::read(uintptr_t address, void* destination, size_t size) const {
         count = pread(fd_, destination, size, static_cast<off_t>(address));
     } while (count < 0 && errno == EINTR);
     return count == static_cast<ssize_t>(size);
+}
+std::optional<std::string> Memory::string(uintptr_t address, Maps& cache, size_t limit) const {
+    address = untag_address(address);
+    std::string result;
+    while (result.size() < limit) {
+        const Mapping* mapping = cache.find(address);
+        // Allocators reserve PROT_NONE arenas and commit them later. A cached
+        // mapping can still exist while its permissions have become readable.
+        if (!mapping || !mapping->readable) {
+            cache = Maps::read_self();
+            mapping = cache.find(address);
+        }
+        if (!mapping || !mapping->readable)
+            return {};
+        std::array<char, 128> buffer{};
+        const size_t count =
+            std::min({buffer.size(), size_t(mapping->end - address), limit - result.size()});
+        if (!read(address, buffer.data(), count))
+            return {};
+        for (size_t i = 0; i < count; ++i) {
+            if (buffer[i] == 0)
+                return result;
+            result += buffer[i];
+        }
+        address += count;
+    }
+    return {};
 }
 } // namespace dumper

@@ -10,4 +10,4 @@
 #endif
 #define GamePackageName GAME_PACKAGE_NAME
 
-#endif //ZYGISK_IL2CPPDUMPER_GAME_H
+#endif // ZYGISK_IL2CPPDUMPER_GAME_H

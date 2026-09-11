@@ -1,0 +1,4 @@
+{
+    global: zygisk_module_entry; JNI_OnLoad;
+    local: *;
+};

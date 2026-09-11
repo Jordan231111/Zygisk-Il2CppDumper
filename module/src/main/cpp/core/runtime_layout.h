@@ -8,6 +8,11 @@ using ReadMemory = std::function<bool(uintptr_t, void*, size_t)>;
 // Recognize the bounded AArch64 lazy-global getter emitted by Clang:
 // ADRP/ADR + optional ADD + LDR x0 + CBNZ x0. This discovers a slot from
 // instructions, never a fixed Unity offset. Unsupported code returns no match.
+struct PointerChain {
+    uintptr_t global;
+    size_t offset;
+};
+std::optional<PointerChain> aarch64_vm_thread_chain(uintptr_t entry, const ReadMemory& read);
 struct PointerGetter {
     uintptr_t address;
     bool indirect;

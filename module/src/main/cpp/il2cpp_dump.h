@@ -1,12 +1,10 @@
-//
-// Created by Perfare on 2020/7/4.
-//
-
-#ifndef ZYGISK_IL2CPPDUMPER_IL2CPP_DUMP_H
-#define ZYGISK_IL2CPPDUMPER_IL2CPP_DUMP_H
-
-void il2cpp_api_init(void *handle);
-
-void il2cpp_dump(const char *outDir);
-
-#endif //ZYGISK_IL2CPPDUMPER_IL2CPP_DUMP_H
+#pragma once
+#include <string>
+namespace dumper {
+struct DumpOptions {
+    unsigned timeout_seconds{120};
+    bool verbose{};
+    std::string process;
+};
+bool dump_runtime(void* handle, const std::string& data_directory, const DumpOptions& options);
+} // namespace dumper

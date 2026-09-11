@@ -1,12 +1,16 @@
-//
-// Created by Perfare on 2020/7/4.
-//
-
-#ifndef ZYGISK_IL2CPPDUMPER_HACK_H
-#define ZYGISK_IL2CPPDUMPER_HACK_H
-
-#include <stddef.h>
-
-void hack_prepare(const char *game_data_dir, void *data, size_t length);
-
-#endif //ZYGISK_IL2CPPDUMPER_HACK_H
+#pragma once
+#include "il2cpp_dump.h"
+#include <cstddef>
+#include <jni.h>
+#include <memory>
+#include <string>
+#include <vector>
+namespace dumper {
+struct WorkerContext {
+    JavaVM* vm{};
+    std::string data_directory;
+    DumpOptions options;
+    std::vector<std::byte> bridge_payload;
+};
+bool start_worker(std::unique_ptr<WorkerContext> context);
+} // namespace dumper

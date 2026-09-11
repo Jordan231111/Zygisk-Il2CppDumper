@@ -44,6 +44,7 @@ class Memory {
     Memory(const Memory&) = delete;
     Memory& operator=(const Memory&) = delete;
     bool read(uintptr_t address, void* destination, size_t size) const;
+    std::optional<std::string> string(uintptr_t address, Maps& cache, size_t limit = 65536) const;
     template <class T> std::optional<T> read(uintptr_t address) const {
         T value{};
         if (!read(address, &value, sizeof(value)))

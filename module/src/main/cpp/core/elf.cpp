@@ -229,7 +229,9 @@ bool parse_dynamic(const Image& image, const ReadMemory& read,
             !image.contains(*address & (image.machine == 40 ? ~uintptr_t{1} : ~uintptr_t{0}), 1,
                             kExecute))
             continue;
-        result.emplace(std::string(name, end), *address);
+        const std::string_view symbol_name(name, static_cast<size_t>(end - name));
+        if (symbol_name.starts_with("il2cpp_"))
+            result.emplace(symbol_name, *address);
     }
     return true;
 }
@@ -305,6 +307,7 @@ bool Image::contains(uintptr_t address, size_t size, uint32_t flags) const {
 }
 std::optional<Image> image_from_memory(uintptr_t header, const ReadMemory& read,
                                        std::string& error) {
+    error.clear();
     std::array<uint8_t, 16> ident{};
     if (!read(header, ident.data(), ident.size()) || std::memcmp(ident.data(), "\177ELF", 4) != 0 ||
         ident[5] != 1 || ident[6] != 1) {
@@ -320,6 +323,7 @@ std::optional<Image> image_from_memory(uintptr_t header, const ReadMemory& read,
 }
 bool dynamic_symbols(const Image& image, const ReadMemory& read,
                      std::unordered_map<std::string, uintptr_t>& result, std::string& error) {
+    error.clear();
     result.clear();
     const bool valid =
         image.is64 ? parse_dynamic<Dynamic64, Symbol64, uint64_t>(image, read, result, error)
@@ -330,6 +334,7 @@ bool dynamic_symbols(const Image& image, const ReadMemory& read,
 }
 std::unordered_map<std::string, uint64_t> file_symbols(std::span<const std::byte> bytes,
                                                        std::string& error) {
+    error.clear();
     if (bytes.size() < 16 || std::memcmp(bytes.data(), "\177ELF", 4) != 0 ||
         bytes[5] != std::byte{1} || bytes[6] != std::byte{1}) {
         fail(error, "invalid file ELF identification");

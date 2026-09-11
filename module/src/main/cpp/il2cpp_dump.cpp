@@ -1,429 +1,809 @@
-//
-// Created by Perfare on 2020/7/4.
-//
-
 #include "il2cpp_dump.h"
-#include <dlfcn.h>
-#include <cstdlib>
-#include <cstring>
-#include <cinttypes>
-#include <string>
-#include <vector>
-#include <sstream>
-#include <fstream>
-#include <unistd.h>
-#include "xdl.h"
-#include "log.h"
+#include "core/binary.h"
+#include "core/maps.h"
+#include "core/output.h"
+#include "core/runtime_layout.h"
 #include "il2cpp-tabledefs.h"
-#include "il2cpp-class.h"
+#include "il2cpp_api.h"
+#include "log.h"
+#include "xdl.h"
 
-#define DO_API(r, n, p) r (*n) p
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstring>
+#include <iomanip>
+#include <limits>
+#include <sstream>
+#include <sys/stat.h>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 
-#include "il2cpp-api-functions.h"
+namespace dumper {
+namespace {
+constexpr size_t kMaxAssemblies = 65536;
+constexpr size_t kMaxClassesPerImage = 1000000;
+constexpr size_t kMaxMembersPerClass = 65536;
+constexpr size_t kMaxParameters = 4096;
+constexpr std::streamoff kMaxClassBytes = 16 * 1024 * 1024;
+constexpr size_t kMaxOutputBytes = 1024ULL * 1024 * 1024;
+constexpr size_t kMaxNameBytes = 65536;
+constexpr auto kDumpTimeout = std::chrono::minutes(5);
+using Clock = std::chrono::steady_clock;
 
-#undef DO_API
-
-static uint64_t il2cpp_base = 0;
-
-void init_il2cpp_api(void *handle) {
-#define DO_API(r, n, p) {                      \
-    n = (r (*) p)xdl_sym(handle, #n, nullptr); \
-    if(!n) {                                   \
-        LOGW("api not found %s", #n);          \
-    }                                          \
-}
-
-#include "il2cpp-api-functions.h"
-
-#undef DO_API
-}
-
-std::string get_method_modifier(uint32_t flags) {
-    std::stringstream outPut;
-    auto access = flags & METHOD_ATTRIBUTE_MEMBER_ACCESS_MASK;
+std::string access_modifier(uint32_t flags, bool method) {
+    const auto access = flags & 7U; // ECMA-335 member access bits, identical for fields/methods.
     switch (access) {
-        case METHOD_ATTRIBUTE_PRIVATE:
-            outPut << "private ";
-            break;
-        case METHOD_ATTRIBUTE_PUBLIC:
-            outPut << "public ";
-            break;
-        case METHOD_ATTRIBUTE_FAMILY:
-            outPut << "protected ";
-            break;
-        case METHOD_ATTRIBUTE_ASSEM:
-        case METHOD_ATTRIBUTE_FAM_AND_ASSEM:
-            outPut << "internal ";
-            break;
-        case METHOD_ATTRIBUTE_FAM_OR_ASSEM:
-            outPut << "protected internal ";
-            break;
+    case 1:
+        return "private ";
+    case 2:
+        return "private protected ";
+    case 3:
+        return "internal ";
+    case 4:
+        return "protected ";
+    case 5:
+        return "protected internal ";
+    case 6:
+        return "public ";
+    default:
+        return method ? "private " : "";
     }
-    if (flags & METHOD_ATTRIBUTE_STATIC) {
-        outPut << "static ";
-    }
+}
+std::string method_modifier(uint32_t flags) {
+    std::string result = access_modifier(flags, true);
+    if (flags & METHOD_ATTRIBUTE_STATIC)
+        result += "static ";
     if (flags & METHOD_ATTRIBUTE_ABSTRACT) {
-        outPut << "abstract ";
-        if ((flags & METHOD_ATTRIBUTE_VTABLE_LAYOUT_MASK) == METHOD_ATTRIBUTE_REUSE_SLOT) {
-            outPut << "override ";
-        }
+        result += "abstract ";
+        if (!(flags & METHOD_ATTRIBUTE_NEW_SLOT))
+            result += "override ";
     } else if (flags & METHOD_ATTRIBUTE_FINAL) {
-        if ((flags & METHOD_ATTRIBUTE_VTABLE_LAYOUT_MASK) == METHOD_ATTRIBUTE_REUSE_SLOT) {
-            outPut << "sealed override ";
-        }
+        if (flags & METHOD_ATTRIBUTE_VIRTUAL && !(flags & METHOD_ATTRIBUTE_NEW_SLOT))
+            result += "sealed override ";
     } else if (flags & METHOD_ATTRIBUTE_VIRTUAL) {
-        if ((flags & METHOD_ATTRIBUTE_VTABLE_LAYOUT_MASK) == METHOD_ATTRIBUTE_NEW_SLOT) {
-            outPut << "virtual ";
-        } else {
-            outPut << "override ";
-        }
+        result += (flags & METHOD_ATTRIBUTE_NEW_SLOT) ? "virtual " : "override ";
     }
-    if (flags & METHOD_ATTRIBUTE_PINVOKE_IMPL) {
-        outPut << "extern ";
-    }
-    return outPut.str();
+    if (flags & METHOD_ATTRIBUTE_PINVOKE_IMPL)
+        result += "extern ";
+    return result;
 }
 
-bool _il2cpp_type_is_byref(const Il2CppType *type) {
-    auto byref = type->byref;
-    if (il2cpp_type_is_byref) {
-        byref = il2cpp_type_is_byref(type);
-    }
-    return byref;
-}
+class Writer {
+  public:
+    Writer(Il2CppApi& api, AtomicOutput& output, uintptr_t base)
+        : api_(api), output_(output), base_(base), maps_(Maps::read_self()) {}
 
-std::string dump_method(Il2CppClass *klass) {
-    std::stringstream outPut;
-    outPut << "\n\t// Methods\n";
-    void *iter = nullptr;
-    while (auto method = il2cpp_class_get_methods(klass, &iter)) {
-        //TODO attribute
-        if (method->methodPointer) {
-            outPut << "\t// RVA: 0x";
-            outPut << std::hex << (uint64_t) method->methodPointer - il2cpp_base;
-            outPut << " VA: 0x";
-            outPut << std::hex << (uint64_t) method->methodPointer;
-        } else {
-            outPut << "\t// RVA: 0x VA: 0x0";
+    std::string name(const char* pointer) {
+        if (!pointer)
+            return "<unknown>";
+        if (const auto found = names_.find(pointer); found != names_.end())
+            return found->second;
+        auto result = memory_.string(reinterpret_cast<uintptr_t>(pointer), maps_, kMaxNameBytes);
+        if (!result) {
+            if (++invalid_names <= 3)
+                LOGW("stage=format invalid_name=%p", static_cast<const void*>(pointer));
+            return "<invalid-name>";
         }
-        /*if (method->slot != 65535) {
-            outPut << " Slot: " << std::dec << method->slot;
-        }*/
-        outPut << "\n\t";
-        uint32_t iflags = 0;
-        auto flags = il2cpp_method_get_flags(method, &iflags);
-        outPut << get_method_modifier(flags);
-        //TODO genericContainerIndex
-        auto return_type = il2cpp_method_get_return_type(method);
-        if (_il2cpp_type_is_byref(return_type)) {
-            outPut << "ref ";
+        for (char& character : *result) {
+            const auto byte = static_cast<unsigned char>(character);
+            if (byte < 32 || byte == 127)
+                character = '?';
         }
-        auto return_class = il2cpp_class_from_type(return_type);
-        outPut << il2cpp_class_get_name(return_class) << " " << il2cpp_method_get_name(method)
-               << "(";
-        auto param_count = il2cpp_method_get_param_count(method);
-        for (int i = 0; i < param_count; ++i) {
-            auto param = il2cpp_method_get_param(method, i);
-            auto attrs = param->attrs;
-            if (_il2cpp_type_is_byref(param)) {
-                if (attrs & PARAM_ATTRIBUTE_OUT && !(attrs & PARAM_ATTRIBUTE_IN)) {
-                    outPut << "out ";
-                } else if (attrs & PARAM_ATTRIBUTE_IN && !(attrs & PARAM_ATTRIBUTE_OUT)) {
-                    outPut << "in ";
-                } else {
-                    outPut << "ref ";
+        if (names_.size() < 65536)
+            names_.emplace(pointer, *result);
+        return *result;
+    }
+
+    std::string_view type_name(const Il2CppType* type) {
+        if (!type)
+            return "<unknown>";
+        if (auto it = type_names_.find(type); it != type_names_.end())
+            return it->second;
+        std::string result;
+        if (auto* klass = api_.class_from_type(type)) {
+            // Metadata v39 can supply compact type handles to member accessors.
+            // Class::FromType normalizes those handles; the raw Type::GetName
+            // export can misinterpret them as a full private Il2CppType.
+            result = name(api_.class_get_name(klass));
+            const auto space = name(api_.class_get_namespace(klass));
+            if (!space.empty() && space != "<unknown>")
+                result = space + "." + result;
+        } else
+            result = "<unknown>";
+        // Byref is written as ref/out/in by the member formatter.
+        if (!result.empty() && result.back() == '&')
+            result.pop_back();
+        if (type_names_.size() >= 1000000) {
+            error = "runtime type cache limit exceeded";
+            return "<type-limit>";
+        }
+        return type_names_.emplace(type, std::move(result)).first->second;
+    }
+
+    bool byref(const Il2CppType* type) {
+        if (!type)
+            return false;
+        if (api_.type_is_byref)
+            return api_.type_is_byref(type);
+        if (api_.type_get_object && api_.object_get_class && api_.class_get_method_from_name &&
+            api_.runtime_invoke && api_.object_unbox) {
+            auto* reflected = api_.type_get_object(type);
+            if (!reflected)
+                return false;
+            auto* klass = api_.object_get_class(reflected);
+            if (!klass)
+                return false;
+            const auto* getter = api_.class_get_method_from_name(klass, "get_IsByRef", 0);
+            auto* boxed = invoke(getter, reflected, nullptr, "Type.IsByRef");
+            if (!boxed)
+                return false;
+            const auto result =
+                memory_.read<uint8_t>(reinterpret_cast<uintptr_t>(api_.object_unbox(boxed)));
+            return result && *result == 1;
+        }
+        return false;
+    }
+
+    Il2CppObject* invoke(const MethodInfo* method, void* instance, void** args, const char* stage) {
+        if (!method || !api_.runtime_invoke) {
+            error = std::string("missing reflection method: ") + stage;
+            return nullptr;
+        }
+        Il2CppException* exception = nullptr;
+        const auto* target = method;
+        if (instance && api_.object_get_virtual_method) {
+            if (const auto* resolved =
+                    api_.object_get_virtual_method(static_cast<Il2CppObject*>(instance), method))
+                target = resolved;
+        }
+        auto* value = api_.runtime_invoke(target, instance, args, &exception);
+        if (exception) {
+            error = std::string("managed exception in ") + stage;
+            return nullptr;
+        }
+        return value;
+    }
+
+    void calibrate_method_layout() {
+        if (!(api_.class_from_name && api_.class_get_field_from_name &&
+              api_.field_static_get_value && api_.field_get_value && api_.object_get_class &&
+              api_.runtime_class_init)) {
+            LOGW("method_address_strategy=unavailable (calibration APIs absent)");
+            return;
+        }
+        auto* module = api_.class_from_name(api_.get_corlib(), "System.Reflection", "Module");
+        if (!module)
+            return;
+        api_.runtime_class_init(module);
+        std::optional<size_t> candidate;
+        for (const char* field_name : {"FilterTypeName", "FilterTypeNameIgnoreCase"}) {
+            auto* field = api_.class_get_field_from_name(module, field_name);
+            if (!field)
+                return;
+            const auto* field_type = api_.field_get_type(field);
+            auto* field_class = field_type ? api_.class_from_type(field_type) : nullptr;
+            if (!field_class || api_.class_is_valuetype(field_class))
+                return;
+            Il2CppObject* delegate = nullptr;
+            api_.field_static_get_value(field, &delegate);
+            if (!delegate)
+                return;
+            auto* klass = api_.object_get_class(delegate);
+            if (!klass)
+                return;
+            auto* pointer_field = api_.class_get_field_from_name(klass, "method_ptr");
+            auto* method_field = api_.class_get_field_from_name(klass, "method");
+            if (!pointer_field || !method_field)
+                return;
+            for (auto* item : {pointer_field, method_field}) {
+                const auto field_name_type = type_name(api_.field_get_type(item));
+                if (field_name_type != "System.IntPtr" && field_name_type != "System.UIntPtr")
+                    return;
+            }
+            uintptr_t pointer{}, method{};
+            api_.field_get_value(delegate, pointer_field, &pointer);
+            api_.field_get_value(delegate, method_field, &method);
+            if (!pointer || !method || !maps_.executable(pointer))
+                return;
+            std::optional<size_t> found;
+            for (size_t offset = 0; offset < 8 * sizeof(uintptr_t); offset += sizeof(uintptr_t)) {
+                const auto address = checked_add(untag_address(method), offset);
+                if (!address)
+                    return;
+                const auto value = memory_.read<uintptr_t>(*address);
+                if (value && *value == pointer) {
+                    found = offset;
+                    break;
                 }
-            } else {
-                if (attrs & PARAM_ATTRIBUTE_IN) {
-                    outPut << "[In] ";
-                }
-                if (attrs & PARAM_ATTRIBUTE_OUT) {
-                    outPut << "[Out] ";
-                }
             }
-            auto parameter_class = il2cpp_class_from_type(param);
-            outPut << il2cpp_class_get_name(parameter_class) << " "
-                   << il2cpp_method_get_param_name(method, i);
-            outPut << ", ";
+            if (!found || (candidate && candidate != found))
+                return;
+            candidate = found;
         }
-        if (param_count > 0) {
-            outPut.seekp(-2, outPut.cur);
-        }
-        outPut << ") { }\n";
-        //TODO GenericInstMethod
+        method_offset_ = candidate;
+        LOGI("method_address_strategy=delegate-calibration offset=%zu", *method_offset_);
     }
-    return outPut.str();
-}
 
-std::string dump_property(Il2CppClass *klass) {
-    std::stringstream outPut;
-    outPut << "\n\t// Properties\n";
-    void *iter = nullptr;
-    while (auto prop_const = il2cpp_class_get_properties(klass, &iter)) {
-        //TODO attribute
-        auto prop = const_cast<PropertyInfo *>(prop_const);
-        auto get = il2cpp_property_get_get_method(prop);
-        auto set = il2cpp_property_get_set_method(prop);
-        auto prop_name = il2cpp_property_get_name(prop);
-        outPut << "\t";
-        Il2CppClass *prop_class = nullptr;
-        uint32_t iflags = 0;
-        if (get) {
-            outPut << get_method_modifier(il2cpp_method_get_flags(get, &iflags));
-            prop_class = il2cpp_class_from_type(il2cpp_method_get_return_type(get));
-        } else if (set) {
-            outPut << get_method_modifier(il2cpp_method_get_flags(set, &iflags));
-            auto param = il2cpp_method_get_param(set, 0);
-            prop_class = il2cpp_class_from_type(param);
+    bool write_type(Il2CppClass* klass, const std::string& image) {
+        if (!klass) {
+            error = "null class returned by image enumeration";
+            return false;
         }
-        if (prop_class) {
-            outPut << il2cpp_class_get_name(prop_class) << " " << prop_name << " { ";
-            if (get) {
-                outPut << "get; ";
-            }
-            if (set) {
-                outPut << "set; ";
-            }
-            outPut << "}\n";
-        } else {
-            if (prop_name) {
-                outPut << " // unknown property " << prop_name;
-            }
+        if (Clock::now() > deadline_) {
+            error = "dump deadline exceeded";
+            return false;
         }
-    }
-    return outPut.str();
-}
-
-std::string dump_field(Il2CppClass *klass) {
-    std::stringstream outPut;
-    outPut << "\n\t// Fields\n";
-    auto is_enum = il2cpp_class_is_enum(klass);
-    void *iter = nullptr;
-    while (auto field = il2cpp_class_get_fields(klass, &iter)) {
-        //TODO attribute
-        outPut << "\t";
-        auto attrs = il2cpp_field_get_flags(field);
-        auto access = attrs & FIELD_ATTRIBUTE_FIELD_ACCESS_MASK;
-        switch (access) {
-            case FIELD_ATTRIBUTE_PRIVATE:
-                outPut << "private ";
-                break;
-            case FIELD_ATTRIBUTE_PUBLIC:
-                outPut << "public ";
-                break;
-            case FIELD_ATTRIBUTE_FAMILY:
-                outPut << "protected ";
-                break;
-            case FIELD_ATTRIBUTE_ASSEMBLY:
-            case FIELD_ATTRIBUTE_FAM_AND_ASSEM:
-                outPut << "internal ";
-                break;
-            case FIELD_ATTRIBUTE_FAM_OR_ASSEM:
-                outPut << "protected internal ";
-                break;
-        }
-        if (attrs & FIELD_ATTRIBUTE_LITERAL) {
-            outPut << "const ";
-        } else {
-            if (attrs & FIELD_ATTRIBUTE_STATIC) {
-                outPut << "static ";
-            }
-            if (attrs & FIELD_ATTRIBUTE_INIT_ONLY) {
-                outPut << "readonly ";
-            }
-        }
-        auto field_type = il2cpp_field_get_type(field);
-        auto field_class = il2cpp_class_from_type(field_type);
-        outPut << il2cpp_class_get_name(field_class) << " " << il2cpp_field_get_name(field);
-        //TODO 获取构造函数初始化后的字段值
-        if (attrs & FIELD_ATTRIBUTE_LITERAL && is_enum) {
-            uint64_t val = 0;
-            il2cpp_field_static_get_value(field, &val);
-            outPut << " = " << std::dec << val;
-        }
-        outPut << "; // 0x" << std::hex << il2cpp_field_get_offset(field) << "\n";
-    }
-    return outPut.str();
-}
-
-std::string dump_type(const Il2CppType *type) {
-    std::stringstream outPut;
-    auto *klass = il2cpp_class_from_type(type);
-    outPut << "\n// Namespace: " << il2cpp_class_get_namespace(klass) << "\n";
-    auto flags = il2cpp_class_get_flags(klass);
-    if (flags & TYPE_ATTRIBUTE_SERIALIZABLE) {
-        outPut << "[Serializable]\n";
-    }
-    //TODO attribute
-    auto is_valuetype = il2cpp_class_is_valuetype(klass);
-    auto is_enum = il2cpp_class_is_enum(klass);
-    auto visibility = flags & TYPE_ATTRIBUTE_VISIBILITY_MASK;
-    switch (visibility) {
+        std::ostringstream out;
+        out << "\n// Dll : " << image << "\n// Namespace: " << name(api_.class_get_namespace(klass))
+            << '\n';
+        const auto flags = static_cast<uint32_t>(api_.class_get_flags(klass));
+        const bool value_type = api_.class_is_valuetype(klass), is_enum = api_.class_is_enum(klass);
+        if (flags & TYPE_ATTRIBUTE_SERIALIZABLE)
+            out << "[Serializable]\n";
+        switch (flags & TYPE_ATTRIBUTE_VISIBILITY_MASK) {
         case TYPE_ATTRIBUTE_PUBLIC:
         case TYPE_ATTRIBUTE_NESTED_PUBLIC:
-            outPut << "public ";
-            break;
-        case TYPE_ATTRIBUTE_NOT_PUBLIC:
-        case TYPE_ATTRIBUTE_NESTED_FAM_AND_ASSEM:
-        case TYPE_ATTRIBUTE_NESTED_ASSEMBLY:
-            outPut << "internal ";
+            out << "public ";
             break;
         case TYPE_ATTRIBUTE_NESTED_PRIVATE:
-            outPut << "private ";
+            out << "private ";
             break;
         case TYPE_ATTRIBUTE_NESTED_FAMILY:
-            outPut << "protected ";
+            out << "protected ";
+            break;
+        case TYPE_ATTRIBUTE_NESTED_FAM_AND_ASSEM:
+            out << "private protected ";
             break;
         case TYPE_ATTRIBUTE_NESTED_FAM_OR_ASSEM:
-            outPut << "protected internal ";
+            out << "protected internal ";
             break;
-    }
-    if (flags & TYPE_ATTRIBUTE_ABSTRACT && flags & TYPE_ATTRIBUTE_SEALED) {
-        outPut << "static ";
-    } else if (!(flags & TYPE_ATTRIBUTE_INTERFACE) && flags & TYPE_ATTRIBUTE_ABSTRACT) {
-        outPut << "abstract ";
-    } else if (!is_valuetype && !is_enum && flags & TYPE_ATTRIBUTE_SEALED) {
-        outPut << "sealed ";
-    }
-    if (flags & TYPE_ATTRIBUTE_INTERFACE) {
-        outPut << "interface ";
-    } else if (is_enum) {
-        outPut << "enum ";
-    } else if (is_valuetype) {
-        outPut << "struct ";
-    } else {
-        outPut << "class ";
-    }
-    outPut << il2cpp_class_get_name(klass); //TODO genericContainerIndex
-    std::vector<std::string> extends;
-    auto parent = il2cpp_class_get_parent(klass);
-    if (!is_valuetype && !is_enum && parent) {
-        auto parent_type = il2cpp_class_get_type(parent);
-        if (parent_type->type != IL2CPP_TYPE_OBJECT) {
-            extends.emplace_back(il2cpp_class_get_name(parent));
+        default:
+            out << "internal ";
         }
-    }
-    void *iter = nullptr;
-    while (auto itf = il2cpp_class_get_interfaces(klass, &iter)) {
-        extends.emplace_back(il2cpp_class_get_name(itf));
-    }
-    if (!extends.empty()) {
-        outPut << " : " << extends[0];
-        for (int i = 1; i < extends.size(); ++i) {
-            outPut << ", " << extends[i];
-        }
-    }
-    outPut << "\n{";
-    outPut << dump_field(klass);
-    outPut << dump_property(klass);
-    outPut << dump_method(klass);
-    //TODO EventInfo
-    outPut << "}\n";
-    return outPut.str();
-}
-
-void il2cpp_api_init(void *handle) {
-    LOGI("il2cpp_handle: %p", handle);
-    init_il2cpp_api(handle);
-    if (il2cpp_domain_get_assemblies) {
-        Dl_info dlInfo;
-        if (dladdr((void *) il2cpp_domain_get_assemblies, &dlInfo)) {
-            il2cpp_base = reinterpret_cast<uint64_t>(dlInfo.dli_fbase);
-        }
-        LOGI("il2cpp_base: %" PRIx64"", il2cpp_base);
-    } else {
-        LOGE("Failed to initialize il2cpp api.");
-        return;
-    }
-    while (!il2cpp_is_vm_thread(nullptr)) {
-        LOGI("Waiting for il2cpp_init...");
-        sleep(1);
-    }
-    auto domain = il2cpp_domain_get();
-    il2cpp_thread_attach(domain);
-}
-
-void il2cpp_dump(const char *outDir) {
-    LOGI("dumping...");
-    size_t size;
-    auto domain = il2cpp_domain_get();
-    auto assemblies = il2cpp_domain_get_assemblies(domain, &size);
-    std::stringstream imageOutput;
-    for (int i = 0; i < size; ++i) {
-        auto image = il2cpp_assembly_get_image(assemblies[i]);
-        imageOutput << "// Image " << i << ": " << il2cpp_image_get_name(image) << "\n";
-    }
-    std::vector<std::string> outPuts;
-    if (il2cpp_image_get_class) {
-        LOGI("Version greater than 2018.3");
-        //使用il2cpp_image_get_class
-        for (int i = 0; i < size; ++i) {
-            auto image = il2cpp_assembly_get_image(assemblies[i]);
-            std::stringstream imageStr;
-            imageStr << "\n// Dll : " << il2cpp_image_get_name(image);
-            auto classCount = il2cpp_image_get_class_count(image);
-            for (int j = 0; j < classCount; ++j) {
-                auto klass = il2cpp_image_get_class(image, j);
-                auto type = il2cpp_class_get_type(const_cast<Il2CppClass *>(klass));
-                //LOGD("type name : %s", il2cpp_type_get_name(type));
-                auto outPut = imageStr.str() + dump_type(type);
-                outPuts.push_back(outPut);
+        if ((flags & TYPE_ATTRIBUTE_ABSTRACT) && (flags & TYPE_ATTRIBUTE_SEALED))
+            out << "static ";
+        else if (!(flags & TYPE_ATTRIBUTE_INTERFACE) && (flags & TYPE_ATTRIBUTE_ABSTRACT))
+            out << "abstract ";
+        else if (!value_type && !is_enum && (flags & TYPE_ATTRIBUTE_SEALED))
+            out << "sealed ";
+        out << ((flags & TYPE_ATTRIBUTE_INTERFACE) ? "interface "
+                : is_enum                          ? "enum "
+                : value_type                       ? "struct "
+                                                   : "class ");
+        out << name(api_.class_get_name(klass));
+        bool parent_written = false;
+        auto* parent = api_.class_get_parent(klass);
+        if (!value_type && !is_enum && parent) {
+            const auto parent_name = type_name(api_.class_get_type(parent));
+            if (parent_name != "System.Object" && parent_name != "Object") {
+                out << " : " << parent_name;
+                parent_written = true;
             }
         }
-    } else {
-        LOGI("Version less than 2018.3");
-        //使用反射
-        auto corlib = il2cpp_get_corlib();
-        auto assemblyClass = il2cpp_class_from_name(corlib, "System.Reflection", "Assembly");
-        auto assemblyLoad = il2cpp_class_get_method_from_name(assemblyClass, "Load", 1);
-        auto assemblyGetTypes = il2cpp_class_get_method_from_name(assemblyClass, "GetTypes", 0);
-        if (assemblyLoad && assemblyLoad->methodPointer) {
-            LOGI("Assembly::Load: %p", assemblyLoad->methodPointer);
-        } else {
-            LOGI("miss Assembly::Load");
-            return;
+        void* iterator = nullptr;
+        size_t count = 0;
+        while (auto* interface = api_.class_get_interfaces(klass, &iterator)) {
+            if (out.tellp() > kMaxClassBytes) {
+                error = "class output size limit exceeded";
+                return false;
+            }
+            if (++count > kMaxMembersPerClass) {
+                error = "interface iterator limit exceeded";
+                return false;
+            }
+            out << (parent_written ? ", " : " : ") << type_name(api_.class_get_type(interface));
+            parent_written = true;
         }
-        if (assemblyGetTypes && assemblyGetTypes->methodPointer) {
-            LOGI("Assembly::GetTypes: %p", assemblyGetTypes->methodPointer);
-        } else {
-            LOGI("miss Assembly::GetTypes");
-            return;
+        out << "\n{\n\t// Fields\n";
+        if (!fields(out, klass, is_enum))
+            return false;
+        out << "\n\t// Properties\n";
+        if (!properties(out, klass))
+            return false;
+        out << "\n\t// Methods\n";
+        if (!methods(out, klass))
+            return false;
+        out << "}\n";
+        if (!error.empty())
+            return false;
+        auto text = out.str();
+        if (text.size() > kMaxOutputBytes - std::min(kMaxOutputBytes, output_.bytes())) {
+            error = "output size limit exceeded";
+            return false;
         }
-        typedef void *(*Assembly_Load_ftn)(void *, Il2CppString *, void *);
-        typedef Il2CppArray *(*Assembly_GetTypes_ftn)(void *, void *);
-        for (int i = 0; i < size; ++i) {
-            auto image = il2cpp_assembly_get_image(assemblies[i]);
-            std::stringstream imageStr;
-            auto image_name = il2cpp_image_get_name(image);
-            imageStr << "\n// Dll : " << image_name;
-            //LOGD("image name : %s", image->name);
-            auto imageName = std::string(image_name);
-            auto pos = imageName.rfind('.');
-            auto imageNameNoExt = imageName.substr(0, pos);
-            auto assemblyFileName = il2cpp_string_new(imageNameNoExt.data());
-            auto reflectionAssembly = ((Assembly_Load_ftn) assemblyLoad->methodPointer)(nullptr,
-                                                                                        assemblyFileName,
-                                                                                        nullptr);
-            auto reflectionTypes = ((Assembly_GetTypes_ftn) assemblyGetTypes->methodPointer)(
-                    reflectionAssembly, nullptr);
-            auto items = reflectionTypes->vector;
-            for (int j = 0; j < reflectionTypes->max_length; ++j) {
-                auto klass = il2cpp_class_from_system_type((Il2CppReflectionType *) items[j]);
-                auto type = il2cpp_class_get_type(klass);
-                //LOGD("type name : %s", il2cpp_type_get_name(type));
-                auto outPut = imageStr.str() + dump_type(type);
-                outPuts.push_back(outPut);
+        if (!output_.write(text)) {
+            error = output_.error();
+            return false;
+        }
+        ++classes;
+        return true;
+    }
+
+    bool reflection_image(const Il2CppImage* image, const std::string& image_name) {
+        auto* assembly_class =
+            api_.class_from_name(api_.get_corlib(), "System.Reflection", "Assembly");
+        if (!assembly_class) {
+            error = "System.Reflection.Assembly unavailable";
+            return false;
+        }
+        const MethodInfo* load = nullptr;
+        void* iterator = nullptr;
+        size_t count = 0;
+        while (const auto* method = api_.class_get_methods(assembly_class, &iterator)) {
+            if (++count > kMaxMembersPerClass) {
+                error = "reflection method iterator limit exceeded";
+                return false;
+            }
+            if (name(api_.method_get_name(method)) == "Load" &&
+                api_.method_get_param_count(method) == 1 &&
+                type_name(api_.method_get_param(method, 0)) == "System.String") {
+                load = method;
+                break;
             }
         }
+        auto simple_name = image_name.substr(0, image_name.rfind('.'));
+        void* args[] = {api_.string_new(simple_name.c_str())};
+        auto* assembly = invoke(load, nullptr, args, "Assembly.Load(string)");
+        if (!assembly) {
+            if (error.empty())
+                error = "Assembly.Load returned null";
+            return false;
+        }
+        auto* klass = api_.object_get_class(assembly);
+        if (!klass) {
+            error = "reflection assembly has no class";
+            return false;
+        }
+        auto* types = invoke(api_.class_get_method_from_name(klass, "GetTypes", 0), assembly,
+                             nullptr, "Assembly.GetTypes");
+        if (!types) {
+            if (error.empty())
+                error = "Assembly.GetTypes returned null";
+            return false;
+        }
+        auto* array_class = api_.object_get_class(types);
+        if (!array_class) {
+            error = "reflection array has no class";
+            return false;
+        }
+        auto* enumerator = invoke(api_.class_get_method_from_name(array_class, "GetEnumerator", 0),
+                                  types, nullptr, "Array.GetEnumerator");
+        if (!enumerator) {
+            if (error.empty())
+                error = "Array.GetEnumerator returned null";
+            return false;
+        }
+        auto* enum_class = api_.object_get_class(enumerator);
+        if (!enum_class) {
+            error = "enumerator has no class";
+            return false;
+        }
+        const auto* move_next = api_.class_get_method_from_name(enum_class, "MoveNext", 0);
+        const auto* current = api_.class_get_method_from_name(enum_class, "get_Current", 0);
+        for (size_t index = 0; index <= kMaxClassesPerImage; ++index) {
+            auto* boxed = invoke(move_next, enumerator, nullptr, "IEnumerator.MoveNext");
+            if (!boxed) {
+                if (error.empty())
+                    error = "MoveNext returned null";
+                return false;
+            }
+            const auto value =
+                memory_.read<uint8_t>(reinterpret_cast<uintptr_t>(api_.object_unbox(boxed)));
+            if (!value || *value > 1) {
+                error = "invalid MoveNext boolean";
+                return false;
+            }
+            if (*value == 0)
+                return true;
+            if (index == kMaxClassesPerImage)
+                break;
+            auto* type = invoke(current, enumerator, nullptr, "IEnumerator.Current");
+            if (!type || !write_type(api_.class_from_system_type(
+                                         reinterpret_cast<Il2CppReflectionType*>(type)),
+                                     image_name))
+                return false;
+        }
+        (void)image;
+        error = "reflection class limit exceeded";
+        return false;
     }
-    LOGI("write dump file");
-    auto outPath = std::string(outDir).append("/files/dump.cs");
-    std::ofstream outStream(outPath);
-    outStream << imageOutput.str();
-    auto count = outPuts.size();
-    for (int i = 0; i < count; ++i) {
-        outStream << outPuts[i];
+
+    size_t classes{}, method_count{}, invalid_names{}, missing_addresses{};
+    std::string error;
+
+  private:
+    bool fields(std::ostringstream& out, Il2CppClass* klass, bool is_enum) {
+        void* iterator = nullptr;
+        size_t count = 0;
+        while (auto* field = api_.class_get_fields(klass, &iterator)) {
+            if (out.tellp() > kMaxClassBytes) {
+                error = "class output size limit exceeded";
+                return false;
+            }
+            if (++count > kMaxMembersPerClass) {
+                error = "field iterator limit exceeded";
+                return false;
+            }
+            const auto flags = static_cast<uint32_t>(api_.field_get_flags(field));
+            out << '\t' << access_modifier(flags, false);
+            if (flags & FIELD_ATTRIBUTE_LITERAL)
+                out << "const ";
+            else {
+                if (flags & FIELD_ATTRIBUTE_STATIC)
+                    out << "static ";
+                if (flags & FIELD_ATTRIBUTE_INIT_ONLY)
+                    out << "readonly ";
+            }
+            out << type_name(api_.field_get_type(field)) << ' ' << name(api_.field_get_name(field));
+            if (is_enum && (flags & FIELD_ATTRIBUTE_LITERAL) && api_.class_enum_basetype &&
+                api_.field_static_get_value) {
+                const auto underlying = type_name(api_.class_enum_basetype(klass));
+                std::array<std::byte, 8> value{};
+                // Only primitive integral enum storage may be copied into this buffer.
+                const std::array<std::string_view, 8> names{
+                    "System.SByte", "System.Byte",   "System.Int16", "System.UInt16",
+                    "System.Int32", "System.UInt32", "System.Int64", "System.UInt64"};
+                const auto found = std::find(names.begin(), names.end(), underlying);
+                if (found != names.end()) {
+                    api_.field_static_get_value(field, value.data());
+                    const auto index = static_cast<size_t>(found - names.begin());
+                    const size_t width = size_t{1} << (index / 2);
+                    uint64_t integer{};
+                    std::memcpy(&integer, value.data(), width);
+                    out << " = " << std::dec;
+                    if (index % 2 == 0) {
+                        if (width < 8 && (integer & (uint64_t{1} << (width * 8 - 1))))
+                            integer |= ~((uint64_t{1} << (width * 8)) - 1);
+                        int64_t signed_value{};
+                        std::memcpy(&signed_value, &integer, sizeof(integer));
+                        out << signed_value;
+                    } else
+                        out << integer;
+                }
+            }
+            const auto offset = api_.field_get_offset(field);
+            out << "; // ";
+            if (offset == std::numeric_limits<size_t>::max())
+                out << "-1 (thread static)";
+            else
+                out << "0x" << std::hex << offset;
+            out << '\n';
+        }
+        return true;
     }
-    outStream.close();
-    LOGI("dump done!");
+    bool properties(std::ostringstream& out, Il2CppClass* klass) {
+        void* iterator = nullptr;
+        size_t count = 0;
+        while (const auto* property = api_.class_get_properties(klass, &iterator)) {
+            if (out.tellp() > kMaxClassBytes) {
+                error = "class output size limit exceeded";
+                return false;
+            }
+            if (++count > kMaxMembersPerClass) {
+                error = "property iterator limit exceeded";
+                return false;
+            }
+            auto* mutable_property = const_cast<PropertyInfo*>(property);
+            const auto* get = api_.property_get_get_method(mutable_property);
+            const auto* set = api_.property_get_set_method(mutable_property);
+            const Il2CppType* type = nullptr;
+            uint32_t implementation_flags{};
+            if (get)
+                type = api_.method_get_return_type(get);
+            else if (set) {
+                const auto n = api_.method_get_param_count(set);
+                if (n > 0 && n <= kMaxMembersPerClass)
+                    type = api_.method_get_param(set, n - 1);
+            }
+            if (!type) {
+                out << "\t// Unknown property: " << name(api_.property_get_name(mutable_property))
+                    << '\n';
+                continue;
+            }
+            out << '\t'
+                << method_modifier(api_.method_get_flags(get ? get : set, &implementation_flags))
+                << type_name(type) << ' ' << name(api_.property_get_name(mutable_property))
+                << " { ";
+            if (get)
+                out << "get; ";
+            if (set)
+                out << "set; ";
+            out << "}\n";
+        }
+        return true;
+    }
+    bool methods(std::ostringstream& out, Il2CppClass* klass) {
+        void* iterator = nullptr;
+        size_t count = 0;
+        while (const auto* method = api_.class_get_methods(klass, &iterator)) {
+            if (out.tellp() > kMaxClassBytes) {
+                error = "class output size limit exceeded";
+                return false;
+            }
+            if (++count > kMaxMembersPerClass || Clock::now() > deadline_) {
+                error = "method iterator limit/deadline exceeded";
+                return false;
+            }
+            uintptr_t pointer{};
+            if (method_offset_) {
+                const auto address = checked_add(untag_address(reinterpret_cast<uintptr_t>(method)),
+                                                 *method_offset_);
+                if (address)
+                    pointer = memory_.read<uintptr_t>(*address).value_or(0);
+            }
+            if (pointer && maps_.executable(pointer)) {
+                out << "\t// RVA: ";
+                if (pointer >= base_ && same_module(pointer))
+                    out << "0x" << std::hex << (pointer - base_);
+                else
+                    out << "unavailable";
+                out << " VA: 0x" << std::hex << pointer << '\n';
+            } else {
+                ++missing_addresses;
+                out << "\t// RVA: unavailable VA: 0x0\n";
+            }
+            uint32_t implementation_flags{};
+            out << '\t' << method_modifier(api_.method_get_flags(method, &implementation_flags));
+            const auto* result = api_.method_get_return_type(method);
+            if (byref(result))
+                out << "ref ";
+            out << type_name(result) << ' ' << name(api_.method_get_name(method)) << '(';
+            const uint32_t parameters = api_.method_get_param_count(method);
+            if (parameters > kMaxParameters) {
+                error = "invalid parameter count";
+                return false;
+            }
+            for (uint32_t i = 0; i < parameters; ++i) {
+                if (out.tellp() > kMaxClassBytes) {
+                    error = "class output size limit exceeded";
+                    return false;
+                }
+                if (i != 0)
+                    out << ", ";
+                const auto* parameter = api_.method_get_param(method, i);
+                const uint32_t attributes =
+                    parameter && api_.type_get_attrs ? api_.type_get_attrs(parameter) : 0;
+                if (byref(parameter)) {
+                    if ((attributes & PARAM_ATTRIBUTE_OUT) && !(attributes & PARAM_ATTRIBUTE_IN))
+                        out << "out ";
+                    else if ((attributes & PARAM_ATTRIBUTE_IN) &&
+                             !(attributes & PARAM_ATTRIBUTE_OUT))
+                        out << "in ";
+                    else
+                        out << "ref ";
+                } else {
+                    if (attributes & PARAM_ATTRIBUTE_IN)
+                        out << "[In] ";
+                    if (attributes & PARAM_ATTRIBUTE_OUT)
+                        out << "[Out] ";
+                }
+                out << type_name(parameter) << ' ' << name(api_.method_get_param_name(method, i));
+            }
+            out << ") { }\n";
+            ++method_count;
+        }
+        return true;
+    }
+    bool same_module(uintptr_t address) const {
+        return api_.module_image.contains(address, 1, elf::kExecute);
+    }
+    Il2CppApi& api_;
+    AtomicOutput& output_;
+    uintptr_t base_{};
+    Maps maps_;
+    Memory memory_;
+    std::unordered_map<const Il2CppType*, std::string> type_names_;
+    std::unordered_map<const char*, std::string> names_;
+    std::optional<size_t> method_offset_;
+    Clock::time_point deadline_{Clock::now() + kDumpTimeout};
+};
+} // namespace
+
+bool dump_runtime(void* handle, const std::string& data_directory, const DumpOptions& options) {
+    Il2CppApi api;
+    std::string error;
+    if (!api.load(handle, error)) {
+        LOGE("stage=resolve fatal=%s", error.c_str());
+        return false;
+    }
+    xdl_info_t info{};
+    if (xdl_info(handle, XDL_DI_DLINFO, &info) != 0 || !info.dli_fbase) {
+        LOGE("stage=resolve fatal=missing-load-bias");
+        return false;
+    }
+    LOGI("module=%s load_bias=%p phdrs=%zu", info.dli_fname ? info.dli_fname : "<unknown>",
+         info.dli_fbase, info.dlpi_phnum);
+    const auto deadline = Clock::now() + std::chrono::seconds(options.timeout_seconds);
+#if defined(__aarch64__)
+    LOGI("stage=initialize readiness=validated-runtime-getters");
+    Memory readiness_memory;
+    unsigned stable_samples = 0;
+    // Reading validated accessor globals avoids executing a partially loaded or
+    // temporarily encrypted API. Corlib alone can precede GC/domain readiness.
+    do {
+        const auto maps = Maps::read_self();
+        const auto read_code = [&](uintptr_t address, void* target, size_t size) {
+            return maps.executable(address) && readiness_memory.read(address, target, size);
+        };
+        const auto corlib =
+            aarch64_pointer_getter(reinterpret_cast<uintptr_t>(api.get_corlib), read_code);
+        const auto domain =
+            aarch64_pointer_getter(reinterpret_cast<uintptr_t>(api.domain_get), read_code);
+        const auto valid_global = [&](const std::optional<PointerGetter>& getter) {
+            if (!getter)
+                return false;
+            const auto* mapping = maps.find(getter->address, sizeof(uintptr_t));
+            if (!mapping || !mapping->readable || mapping->executable)
+                return false;
+            const auto value = getter->indirect
+                                   ? readiness_memory.read<uintptr_t>(getter->address).value_or(0)
+                                   : getter->address;
+            return value != 0 && maps.readable(value, sizeof(uintptr_t));
+        };
+        bool thread_ready = false;
+        if (api.is_vm_thread) {
+            const auto chain =
+                aarch64_vm_thread_chain(reinterpret_cast<uintptr_t>(api.is_vm_thread), read_code);
+            if (chain && maps.readable(chain->global, sizeof(uintptr_t))) {
+                const auto owner = readiness_memory.read<uintptr_t>(chain->global).value_or(0);
+                const auto field = checked_add(untag_address(owner), chain->offset);
+                if (owner && field && maps.readable(*field, sizeof(uintptr_t))) {
+                    const auto thread = readiness_memory.read<uintptr_t>(*field).value_or(0);
+                    thread_ready = thread != 0 && maps.readable(thread, sizeof(uintptr_t));
+                }
+            }
+        }
+        // Some Unity releases create AppDomain lazily on the first query. The
+        // validated VM-thread predicate provides an independent readiness gate.
+        if (valid_global(corlib) && (valid_global(domain) || thread_ready))
+            ++stable_samples;
+        else
+            stable_samples = 0;
+        if (stable_samples >= 2)
+            break;
+        if (Clock::now() >= deadline) {
+            LOGE("stage=initialize fatal=runtime-getters-unready-or-unsupported");
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    } while (true);
+#else
+    LOGI("stage=initialize readiness=corlib-settle");
+    while (!api.get_corlib()) {
+        if (Clock::now() >= deadline) {
+            LOGE("stage=initialize fatal=corlib-timeout");
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+#endif
+    auto* domain = api.domain_get();
+    if (!domain) {
+        LOGE("stage=initialize fatal=null-domain");
+        return false;
+    }
+    auto* previous_thread = api.thread_current ? api.thread_current() : nullptr;
+    auto* thread = previous_thread ? previous_thread : api.thread_attach(domain);
+    if (!thread) {
+        LOGE("stage=initialize fatal=thread-attach-failed");
+        return false;
+    }
+    struct Attachment {
+        Il2CppApi& api;
+        Il2CppThread* thread;
+        bool owned;
+        ~Attachment() {
+            if (owned)
+                api.thread_detach(thread);
+        }
+    } attachment{api, thread, previous_thread == nullptr};
+    size_t count{};
+    const auto** assemblies = api.domain_get_assemblies(domain, &count);
+    if (!assemblies || count == 0 || count > kMaxAssemblies) {
+        LOGE("stage=enumerate fatal=invalid-assembly-count count=%zu", count);
+        return false;
+    }
+    Memory memory;
+    std::vector<const Il2CppAssembly*> snapshot(count);
+    if (!memory.read(reinterpret_cast<uintptr_t>(assemblies), snapshot.data(),
+                     count * sizeof(void*))) {
+        LOGE("stage=enumerate fatal=unreadable-assembly-array");
+        return false;
+    }
+    const std::string directory = data_directory + "/files";
+    if (mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST) {
+        LOGE("stage=output fatal=mkdir-failed errno=%d", errno);
+        return false;
+    }
+    auto filename = std::string("dump.cs");
+    if (const auto colon = options.process.find(':'); colon != std::string::npos) {
+        auto suffix = options.process.substr(colon + 1);
+        for (char& c : suffix)
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                  c == '_'))
+                c = '_';
+        filename = "dump-" + suffix + ".cs";
+    }
+    AtomicOutput output(directory, filename);
+    if (!output.good()) {
+        LOGE("stage=output fatal=%s", output.error().c_str());
+        return false;
+    }
+    const auto started = Clock::now();
+    Writer writer(api, output, reinterpret_cast<uintptr_t>(info.dli_fbase));
+    writer.calibrate_method_layout();
+    output.write("// Zygisk-Il2CppDumper: live runtime API dump\n// Metadata and registrations are "
+                 "supplied by IL2CPP; no private metadata layout is assumed.\n");
+    for (size_t i = 0; i < count; ++i) {
+        if (!snapshot[i]) {
+            LOGE("stage=enumerate fatal=null-assembly index=%zu", i);
+            return false;
+        }
+        const auto* image = api.assembly_get_image(snapshot[i]);
+        if (!image) {
+            LOGE("stage=enumerate fatal=null-image index=%zu", i);
+            return false;
+        }
+        output.write("// Image " + std::to_string(i) + ": " +
+                     writer.name(api.image_get_name(image)) + "\n");
+    }
+    const bool image_api = api.image_get_class && api.image_get_class_count;
+    bool metadata_found = false;
+    const auto metadata_maps = Maps::read_self();
+    for (const auto& mapping : metadata_maps.entries()) {
+        if (!mapping.readable || mapping.file_offset != 0 ||
+            mapping.path.find("global-metadata.dat") == std::string::npos)
+            continue;
+        const auto header = memory.read<MetadataHeader>(mapping.begin);
+        if (header && header->magic == 0xfab11bafU && header->version != 0) {
+            LOGI("metadata_source=%s metadata_version=%u (header identification only)",
+                 mapping.path.c_str(), header->version);
+            metadata_found = true;
+        }
+    }
+    if (!metadata_found)
+        LOGI("metadata_source=runtime (no named metadata mapping)");
+    LOGI("registrations=owned-by-runtime private-registration-layout=unused");
+    LOGI("stage=dump strategy=%s assemblies=%zu", image_api ? "image-API" : "managed-reflection",
+         count);
+    for (const auto* assembly : snapshot) {
+        const auto* image = api.assembly_get_image(assembly);
+        const auto image_name = writer.name(api.image_get_name(image));
+        if (image_api) {
+            const size_t class_count = api.image_get_class_count(image);
+            if (class_count > kMaxClassesPerImage) {
+                LOGE("stage=enumerate fatal=invalid-class-count count=%zu image=%s", class_count,
+                     image_name.c_str());
+                return false;
+            }
+            if (options.verbose)
+                LOGI("stage=image name=%s classes=%zu", image_name.c_str(), class_count);
+            for (size_t index = 0; index < class_count; ++index) {
+                if (!writer.write_type(const_cast<Il2CppClass*>(api.image_get_class(image, index)),
+                                       image_name)) {
+                    LOGE("stage=dump fatal=%s image=%s class_index=%zu", writer.error.c_str(),
+                         image_name.c_str(), index);
+                    return false;
+                }
+            }
+        } else if (!writer.reflection_image(image, image_name)) {
+            LOGE("stage=reflection fatal=%s", writer.error.c_str());
+            return false;
+        }
+    }
+    if (!output.commit()) {
+        LOGE("stage=output fatal=%s", output.error().c_str());
+        return false;
+    }
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started).count();
+    LOGI("stage=complete path=%s/%s classes=%zu methods=%zu bytes=%zu elapsed_ms=%lld "
+         "unavailable_addresses=%zu invalid_names=%zu",
+         directory.c_str(), filename.c_str(), writer.classes, writer.method_count, output.bytes(),
+         static_cast<long long>(elapsed), writer.missing_addresses, writer.invalid_names);
+    return true;
 }
+} // namespace dumper

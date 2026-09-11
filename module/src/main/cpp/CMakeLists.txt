@@ -1,51 +1,28 @@
 cmake_minimum_required(VERSION 3.22)
-
-if (NOT DEFINED MODULE_NAME)
-    message(FATAL_ERROR "MODULE_NAME is not set")
-else ()
-    project(${MODULE_NAME})
-endif ()
-
-message("Build type: ${CMAKE_BUILD_TYPE}")
-
+project(il2cppdumper LANGUAGES C CXX)
+if(NOT DEFINED MODULE_NAME)
+    set(MODULE_NAME il2cppdumper)
+endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set(LINKER_FLAGS "-Wl,--hash-style=both -Wl,-z,max-page-size=16384")
-set(C_FLAGS "-Werror=format -fdata-sections -ffunction-sections")
-set(CXX_FLAGS "${CXX_FLAGS} -fno-exceptions -fno-rtti")
+add_library(xdl STATIC xdl/xdl.c xdl/xdl_iterate.c xdl/xdl_linker.c xdl/xdl_lzma.c xdl/xdl_util.c)
+set_target_properties(xdl PROPERTIES POSITION_INDEPENDENT_CODE ON C_STANDARD 17)
+target_include_directories(xdl PUBLIC xdl/include)
+target_compile_options(xdl PRIVATE -Wall -Wextra -Wformat=2 -fvisibility=hidden)
 
-if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(C_FLAGS "${C_FLAGS} -O2 -fvisibility=hidden -fvisibility-inlines-hidden")
-    set(LINKER_FLAGS "${LINKER_FLAGS} -Wl,-exclude-libs,ALL -Wl,--gc-sections -Wl,--strip-all")
-else ()
-    set(C_FLAGS "${C_FLAGS} -O0")
-endif ()
-
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${C_FLAGS}")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${C_FLAGS} ${CXX_FLAGS}")
-
-set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${LINKER_FLAGS}")
-set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} ${LINKER_FLAGS}")
-
-include_directories(
-        xdl/include
-)
-
-aux_source_directory(xdl xdl-src)
-
-add_library(${MODULE_NAME} SHARED
-        main.cpp
-        hack.cpp
-        il2cpp_dump.cpp
-        ${xdl-src})
-target_link_libraries(${MODULE_NAME} log)
-if (DEFINED GAME_PACKAGE_NAME)
+add_library(${MODULE_NAME} SHARED main.cpp hack.cpp discovery.cpp il2cpp_api.cpp il2cpp_dump.cpp
+    core/elf.cpp core/runtime_layout.cpp core/maps.cpp core/target.cpp core/output.cpp)
+target_compile_options(${MODULE_NAME} PRIVATE -Wall -Wextra -Wpedantic -Wformat=2 -Wshadow -Werror
+    -fno-exceptions -fno-rtti -fvisibility=hidden -fvisibility-inlines-hidden
+    -ffunction-sections -fdata-sections)
+target_link_options(${MODULE_NAME} PRIVATE -Wl,--exclude-libs,ALL -Wl,--gc-sections
+    -Wl,--hash-style=both -Wl,-z,max-page-size=16384
+    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.map")
+set_property(TARGET ${MODULE_NAME} APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/exports.map")
+target_link_libraries(${MODULE_NAME} PRIVATE xdl log dl)
+if(DEFINED GAME_PACKAGE_NAME)
     target_compile_definitions(${MODULE_NAME} PRIVATE GAME_PACKAGE_NAME="${GAME_PACKAGE_NAME}")
-endif ()
-
-if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-    add_custom_command(TARGET ${MODULE_NAME} POST_BUILD
-            COMMAND ${CMAKE_STRIP} --strip-all --remove-section=.comment "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/lib${MODULE_NAME}.so")
-endif ()
+endif()

@@ -98,3 +98,61 @@ std::optional<uintptr_t> aarch64_lazy_global(uintptr_t entry, const ReadMemory& 
     return {};
 }
 } // namespace dumper
+
+namespace dumper {
+std::optional<PointerChain> aarch64_vm_thread_chain(uintptr_t entry, const ReadMemory& read) {
+    if ((entry & 3U) != 0)
+        return {};
+    // Supported wrapper: tail branch, optional BTI/PAC/stack prologue, then a
+    // call to a pure pointer comparison. No recovered function is executed.
+    uintptr_t pc = entry;
+    unsigned jumps = 0;
+    bool followed_call = false;
+    for (unsigned step = 0; step < 24; ++step) {
+        std::array<uint32_t, 6> code{};
+        if (!read(pc, code.data(), sizeof(code)))
+            return {};
+        const auto instruction = code[0];
+        if ((instruction & 0xfc000000U) == 0x14000000U ||
+            (!followed_call && (instruction & 0xfc000000U) == 0x94000000U)) {
+            if (++jumps > 4)
+                return {};
+            followed_call |= (instruction & 0xfc000000U) == 0x94000000U;
+            const auto target = add_signed(pc, sign_extend(instruction & 0x03ffffffU, 26) * 4);
+            if (!target)
+                return {};
+            pc = *target;
+            continue;
+        }
+        if ((instruction & 0x9f000000U) == 0x90000000U) {
+            const uint32_t reg = instruction & 31U;
+            const auto immediate =
+                ((instruction >> 29) & 3U) | (((instruction >> 5) & 0x7ffffU) << 2);
+            const auto page = add_signed(pc & ~uintptr_t{4095}, sign_extend(immediate, 21) * 4096);
+            if (!page || reg == 31)
+                return {};
+            const uint32_t load_mask = 0xf9400000U | (reg << 5) | reg;
+            const bool loads =
+                (code[1] & 0xffc003ffU) == load_mask && (code[2] & 0xffc003ffU) == load_mask;
+            const uint32_t compare = 0xeb00001fU | (reg << 5); // CMP Xreg, X0
+            if (loads && code[3] == compare && code[4] == 0x1a9f17e0U && code[5] == 0xd65f03c0U) {
+                const auto global = checked_add(*page, ((code[1] >> 10) & 4095U) * 8);
+                if (global)
+                    return PointerChain{*global, size_t((code[2] >> 10) & 4095U) * 8};
+            }
+            return {};
+        }
+        const bool landing = instruction == 0xd503245fU || instruction == 0xd503233fU ||
+                             instruction == 0xd503237fU || instruction == 0xd503201fU;
+        const bool stack_store = (instruction & 0x3b4003e0U) == 0x290003e0U ||
+                                 (instruction & 0xffe003e0U) == 0xf80003e0U;
+        if (!landing && !stack_store)
+            return {};
+        const auto next = checked_add(pc, 4);
+        if (!next)
+            return {};
+        pc = *next;
+    }
+    return {};
+}
+} // namespace dumper
