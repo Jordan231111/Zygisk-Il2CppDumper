@@ -1,0 +1,3 @@
+cmake==4.4.3
+ninja==1.13.2
+clang-format==23.1.1

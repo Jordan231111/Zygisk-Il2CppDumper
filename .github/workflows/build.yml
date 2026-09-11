@@ -1,35 +1,108 @@
-name: Build
+name: Build and test
 on:
+  push:
+  pull_request:
   workflow_dispatch:
     inputs:
       package_name:
-        description: "Package name of the game:"
-        required: true
-
+        description: Default target package (targets.txt can override it after installation)
+        default: com.game.packagename
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+  host-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+          cache: pip
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python scripts/check_format.py
+      - run: cmake -S . -B build/host -G Ninja -DDUMPER_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug
+      - run: cmake --build build/host && ctest --test-dir build/host --output-on-failure --output-junit results.xml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: host-test-results
+          path: build/host/results.xml
+          if-no-files-found: error
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      TARGET_PACKAGE: ${{ inputs.package_name || 'com.game.packagename' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
-          java-version: 17
-          cache: gradle
-      - run: |
-          chmod +x ./gradlew
-          sed -i 's/moduleDescription = "/moduleDescription = "(${{ github.event.inputs.package_name }}) /g' module.gradle
-          sed -i "s/com.game.packagename/${{ github.event.inputs.package_name }}/g" module/src/main/cpp/game.h
-          ./gradlew :module:assembleRelease
-      - uses: actions/upload-artifact@v7
+          java-version: '25'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+          cache: pip
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Install stable Android SDK packages
+        run: |
+          if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/android" ]; then
+            for package in platforms/android-37.0 build-tools/37.0.0 ndk/30.0.16248370; do
+              "$ANDROID_HOME/cmdline-tools/latest/bin/android" sdk install "$package"
+            done
+          else
+            # Bootstrap compatibility with hosted images predating Android CLI.
+            sdkmanager 'platforms;android-37' 'build-tools;37.0.0' 'ndk;30.0.16248370'
+          fi
+      - name: Build Debug, Release and Android lint
+        run: ./gradlew ":module:assembleDebug" ":module:assembleRelease" ":module:lint" "-PtargetPackage=$TARGET_PACKAGE" --warning-mode=fail --console=plain
+      - name: Verify module archives
+        run: |
+          for archive in out/*.zip; do
+            python scripts/verify_module.py "$archive" --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          done
+      - name: Build synthetic Android runtime tests
+        run: |
+          cmake -S . -B build/android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/30.0.16248370/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-23 -DANDROID_STL=c++_static \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build/android
+      - name: Start Android 17 x86_64 emulator
+        run: |
+          if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/android" ]; then
+            "$ANDROID_HOME/cmdline-tools/latest/bin/android" sdk install 'system-images/android-37.0/google_apis/x86_64'
+          else
+            sdkmanager 'system-images;android-37.0;google_apis;x86_64'
+          fi
+          sudo chmod a+rw /dev/kvm
+          echo no | avdmanager create avd -n il2cpp-ci -k 'system-images;android-37.0;google_apis;x86_64' --device pixel_5
+          "$ANDROID_HOME/emulator/emulator" -avd il2cpp-ci -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader -port 5554 > build/emulator.log 2>&1 &
+          python scripts/wait_device.py --serial emulator-5554
+      - name: Exercise native runtime and failure paths
+        run: python scripts/test_device.py --serial emulator-5554 --build-dir build/android
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
         with:
           name: zygisk-il2cppdumper
           path: |
-            out/magisk_module_release/META-INF/
-            out/magisk_module_release/module.prop
-            out/magisk_module_release/zygisk/
+            out/*.zip
+            module/build/reports/lint-results-debug.*
+            build/emulator.log
           if-no-files-found: error
+      - name: Stop emulator
+        if: always()
+        run: adb -s emulator-5554 emu kill || true

@@ -1,16 +1,14 @@
-# Set update schedules
-
 version: 2
 updates:
-
-  # Keep GitHub Actions up-to-date
-  - package-ecosystem: "github-actions"
-    directory: "/"
+  - package-ecosystem: github-actions
+    directory: /
     schedule:
-      interval: "weekly"
-
-  # Keep Gradle dependencies up-to-date
-  - package-ecosystem: "gradle"
-    directory: "/"
+      interval: weekly
+  - package-ecosystem: gradle
+    directory: /
     schedule:
-      interval: "weekly" 
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
