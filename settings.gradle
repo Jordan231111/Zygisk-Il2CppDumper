@@ -1,9 +1,18 @@
-import org.apache.tools.ant.DirectoryScanner
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
 
 rootProject.name = 'Zygisk-Il2CppDumper'
 include ':module'
-
-DirectoryScanner.removeDefaultExclude('**/.gitattributes')
-
-// Enable type-safe project accessors
-enableFeaturePreview('TYPESAFE_PROJECT_ACCESSORS')

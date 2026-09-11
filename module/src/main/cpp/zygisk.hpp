@@ -319,8 +319,10 @@ inline bool Api::pltHookCommit() {
 
 } // namespace zygisk
 
-[[gnu::visibility("default")]] [[gnu::used]]
-extern "C" void zygisk_module_entry(zygisk::internal::api_table *, JNIEnv *);
+// Local portability patch: standard attribute placement for current Clang.
+// The API 2 ABI is unchanged, preserving Magisk 24+ compatibility.
+extern "C" [[gnu::visibility("default")]] [[gnu::used]]
+void zygisk_module_entry(zygisk::internal::api_table *, JNIEnv *);
 
-[[gnu::visibility("default")]] [[gnu::used]]
-extern "C" void zygisk_companion_entry(int);
+extern "C" [[gnu::visibility("default")]] [[gnu::used]]
+void zygisk_companion_entry(int);

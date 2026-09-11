@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18.1)
+cmake_minimum_required(VERSION 3.22)
 
 if (NOT DEFINED MODULE_NAME)
     message(FATAL_ERROR "MODULE_NAME is not set")
@@ -9,8 +9,10 @@ endif ()
 message("Build type: ${CMAKE_BUILD_TYPE}")
 
 set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(LINKER_FLAGS "-ffixed-x18 -Wl,--hash-style=both")
+set(LINKER_FLAGS "-Wl,--hash-style=both -Wl,-z,max-page-size=16384")
 set(C_FLAGS "-Werror=format -fdata-sections -ffunction-sections")
 set(CXX_FLAGS "${CXX_FLAGS} -fno-exceptions -fno-rtti")
 
@@ -39,6 +41,9 @@ add_library(${MODULE_NAME} SHARED
         il2cpp_dump.cpp
         ${xdl-src})
 target_link_libraries(${MODULE_NAME} log)
+if (DEFINED GAME_PACKAGE_NAME)
+    target_compile_definitions(${MODULE_NAME} PRIVATE GAME_PACKAGE_NAME="${GAME_PACKAGE_NAME}")
+endif ()
 
 if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_custom_command(TARGET ${MODULE_NAME} POST_BUILD
