@@ -26,6 +26,7 @@ jobs:
         with:
           python-version: '3.14'
           cache: pip
+          cache-dependency-path: requirements-dev.txt
       - run: python -m pip install -r requirements-dev.txt
       - run: python scripts/check_format.py
       - run: cmake -S . -B build/host -G Ninja -DDUMPER_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug
@@ -53,6 +54,7 @@ jobs:
         with:
           python-version: '3.14'
           cache: pip
+          cache-dependency-path: requirements-dev.txt
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           cache-read-only: ${{ github.event_name == 'pull_request' }}
