@@ -59,16 +59,26 @@ jobs:
         with:
           cache-read-only: ${{ github.event_name == 'pull_request' }}
       - run: python -m pip install -r requirements-dev.txt
+      - name: Bootstrap pinned Android command-line tools
+        run: |
+          sdk="$RUNNER_TEMP/android-sdk"
+          mkdir -p "$sdk/cmdline-tools"
+          curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-16111833_latest.zip -o "$RUNNER_TEMP/android-tools.zip"
+          echo "0877a1d048fe4a24efe2eff536ca4223f7adeb58648bb81909d33c446918cfa8  $RUNNER_TEMP/android-tools.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/android-tools.zip" -d "$sdk/cmdline-tools"
+          mv "$sdk/cmdline-tools/cmdline-tools" "$sdk/cmdline-tools/latest"
+          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+          echo "$sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$sdk/platform-tools" >> "$GITHUB_PATH"
+          echo "$sdk/emulator" >> "$GITHUB_PATH"
+          export ANDROID_HOME="$sdk"
+          printf 'y\n%.0s' {1..100} | "$sdk/cmdline-tools/latest/bin/sdkmanager" --licenses
       - name: Install stable Android SDK packages
         run: |
-          if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/android" ]; then
-            for package in platforms/android-37.0 build-tools/37.0.0 ndk/30.0.16248370; do
-              "$ANDROID_HOME/cmdline-tools/latest/bin/android" sdk install "$package"
-            done
-          else
-            # Bootstrap compatibility with hosted images predating Android CLI.
-            sdkmanager 'platforms;android-37' 'build-tools;37.0.0' 'ndk;30.0.16248370'
-          fi
+          android update
+          for package in platforms/android-37.0 build-tools/37.0.0 ndk/30.0.16248370 platform-tools emulator; do
+            android sdk install "$package"
+          done
       - name: Build Debug, Release and Android lint
         run: ./gradlew ":module:assembleDebug" ":module:assembleRelease" ":module:lint" "-PtargetPackage=$TARGET_PACKAGE" --warning-mode=fail --console=plain
       - name: Verify module archives
@@ -85,11 +95,7 @@ jobs:
           cmake --build build/android
       - name: Start Android 17 x86_64 emulator
         run: |
-          if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/android" ]; then
-            "$ANDROID_HOME/cmdline-tools/latest/bin/android" sdk install 'system-images/android-37.0/google_apis/x86_64'
-          else
-            sdkmanager 'system-images;android-37.0;google_apis;x86_64'
-          fi
+          android sdk install 'system-images/android-37.0/google_apis/x86_64'
           sudo chmod a+rw /dev/kvm
           echo no | avdmanager create avd -n il2cpp-ci -k 'system-images;android-37.0;google_apis;x86_64' --device pixel_5
           "$ANDROID_HOME/emulator/emulator" -avd il2cpp-ci -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader -port 5554 > build/emulator.log 2>&1 &
