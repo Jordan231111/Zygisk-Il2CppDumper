@@ -3,8 +3,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace dumper {
@@ -44,8 +46,10 @@ class Memory {
     Memory(const Memory&) = delete;
     Memory& operator=(const Memory&) = delete;
     bool read(uintptr_t address, void* destination, size_t size) const;
+    bool read_pointers(std::span<const uintptr_t> addresses, std::span<uintptr_t> values) const;
     std::optional<std::string> string(uintptr_t address, Maps& cache, size_t limit = 65536) const;
     template <class T> std::optional<T> read(uintptr_t address) const {
+        static_assert(std::is_trivially_copyable_v<T>);
         T value{};
         if (!read(address, &value, sizeof(value)))
             return std::nullopt;

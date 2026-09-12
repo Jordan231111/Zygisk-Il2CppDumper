@@ -158,6 +158,16 @@ int main() {
     CHECK(!memory.read<uint32_t>(0));
     CHECK(!memory.read<uint32_t>(1));
     CHECK(!memory.read<uint32_t>(std::numeric_limits<uintptr_t>::max()));
+    const std::array<uintptr_t, 2> pointer_values{0x1234, 0x5678};
+    std::array<uintptr_t, 3> addresses{reinterpret_cast<uintptr_t>(&pointer_values[0]), 0,
+                                       reinterpret_cast<uintptr_t>(&pointer_values[1])};
+    std::array<uintptr_t, 3> received{};
+    CHECK(!memory.read_pointers(addresses, received));
+    CHECK(received[0] == 0x1234 && received[1] == 0 && received[2] == 0x5678);
+    addresses[1] = addresses[0];
+    CHECK(memory.read_pointers(addresses, received));
+    CHECK(received[1] == 0x1234);
+    CHECK(!memory.read_pointers(addresses, std::span<uintptr_t>(received).first(1)));
     const size_t page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
     auto* arena = static_cast<char*>(
         mmap(nullptr, 2 * page_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));

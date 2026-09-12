@@ -194,4 +194,50 @@ std::optional<std::string> Memory::string(uintptr_t address, Maps& cache, size_t
     }
     return {};
 }
+bool Memory::read_pointers(std::span<const uintptr_t> addresses,
+                           std::span<uintptr_t> values) const {
+    if (values.size() != addresses.size())
+        return false;
+    std::fill(values.begin(), values.end(), 0);
+    bool complete = true;
+    constexpr size_t capacity = 64;
+#if defined(__linux__)
+    const long supported = sysconf(_SC_IOV_MAX);
+    const size_t batch_limit =
+        supported > 0 ? std::min(capacity, static_cast<size_t>(supported)) : 1;
+#else
+    const size_t batch_limit = capacity;
+#endif
+    for (size_t start = 0; start < addresses.size(); start += batch_limit) {
+        const size_t count = std::min(batch_limit, addresses.size() - start);
+#if defined(__linux__)
+        std::array<iovec, capacity> local{}, remote{};
+        bool valid = true;
+        for (size_t i = 0; i < count; ++i) {
+            const auto address = untag_address(addresses[start + i]);
+            valid &= address != 0 &&
+                     address <= std::numeric_limits<uintptr_t>::max() - sizeof(uintptr_t);
+            local[i] = {&values[start + i], sizeof(uintptr_t)};
+            remote[i] = {reinterpret_cast<void*>(address), sizeof(uintptr_t)};
+        }
+        ssize_t read_bytes = -1;
+        if (valid) {
+            do {
+                read_bytes =
+                    process_vm_readv(getpid(), local.data(), count, remote.data(), count, 0);
+            } while (read_bytes < 0 && errno == EINTR);
+        }
+        if (read_bytes == static_cast<ssize_t>(count * sizeof(uintptr_t)))
+            continue;
+#endif
+        // A failed/partial batch never hides an unreadable entry. Preserve good
+        // entries and use the same checked fallback as individual reads.
+        for (size_t i = 0; i < count; ++i) {
+            const auto value = read<uintptr_t>(addresses[start + i]);
+            values[start + i] = value.value_or(0);
+            complete &= value.has_value();
+        }
+    }
+    return complete;
+}
 } // namespace dumper

@@ -67,11 +67,15 @@ class DumperModule final : public zygisk::ModuleBase {
                     count = read(config.value, buffer.data(), buffer.size());
                 } while (count < 0 && errno == EINTR);
                 if (count < 0 || count > 4096) {
+                    LOGW("stage=config reason=unreadable-or-oversized-targets errno=%d", errno);
                     unload();
                     return;
                 }
                 targets.assign(buffer.data(), static_cast<size_t>(count));
             } else if (errno != ENOENT) {
+                LOGW("stage=config reason=targets-open-failed errno=%d; check permissions and "
+                     "SELinux label",
+                     errno);
                 unload();
                 return;
             }

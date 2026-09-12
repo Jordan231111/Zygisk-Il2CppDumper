@@ -516,23 +516,31 @@ class Writer {
     }
     bool methods(std::ostringstream& out, Il2CppClass* klass) {
         void* iterator = nullptr;
-        size_t count = 0;
+        std::vector<const MethodInfo*> methods;
         while (const auto* method = api_.class_get_methods(klass, &iterator)) {
-            if (out.tellp() > kMaxClassBytes) {
-                error = "class output size limit exceeded";
-                return false;
-            }
-            if (++count > kMaxMembersPerClass || Clock::now() > deadline_) {
+            if (methods.size() >= kMaxMembersPerClass || Clock::now() > deadline_) {
                 error = "method iterator limit/deadline exceeded";
                 return false;
             }
-            uintptr_t pointer{};
-            if (method_offset_) {
-                const auto address = checked_add(untag_address(reinterpret_cast<uintptr_t>(method)),
-                                                 *method_offset_);
-                if (address)
-                    pointer = memory_.read<uintptr_t>(*address).value_or(0);
+            methods.push_back(method);
+        }
+        std::vector<uintptr_t> pointers(methods.size());
+        if (method_offset_) {
+            std::vector<uintptr_t> addresses;
+            addresses.reserve(methods.size());
+            for (const auto* method : methods)
+                addresses.push_back(
+                    checked_add(untag_address(reinterpret_cast<uintptr_t>(method)), *method_offset_)
+                        .value_or(0));
+            memory_.read_pointers(addresses, pointers);
+        }
+        for (size_t method_index = 0; method_index < methods.size(); ++method_index) {
+            if (out.tellp() > kMaxClassBytes || Clock::now() > deadline_) {
+                error = "class output size/deadline limit exceeded";
+                return false;
             }
+            const auto* method = methods[method_index];
+            const auto pointer = pointers[method_index];
             if (pointer && maps_.executable(pointer)) {
                 out << "\t// RVA: ";
                 if (pointer >= base_ && same_module(pointer))
@@ -794,12 +802,20 @@ bool dump_runtime(void* handle, const std::string& data_directory, const DumpOpt
             return false;
         }
     }
+    const auto before_publish = Clock::now();
     if (!output.commit()) {
         LOGE("stage=output fatal=%s", output.error().c_str());
         return false;
     }
     const auto elapsed =
         std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started).count();
+    LOGI("stage=timing format_ms=%lld publish_ms=%lld",
+         static_cast<long long>(
+             std::chrono::duration_cast<std::chrono::milliseconds>(before_publish - started)
+                 .count()),
+         static_cast<long long>(
+             std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - before_publish)
+                 .count()));
     LOGI("stage=complete path=%s/%s classes=%zu methods=%zu bytes=%zu elapsed_ms=%lld "
          "unavailable_addresses=%zu invalid_names=%zu",
          directory.c_str(), filename.c_str(), writer.classes, writer.method_count, output.bytes(),

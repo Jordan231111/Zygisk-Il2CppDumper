@@ -68,6 +68,8 @@ jobs:
           unzip -q "$RUNNER_TEMP/android-tools.zip" -d "$sdk/cmdline-tools"
           mv "$sdk/cmdline-tools/cmdline-tools" "$sdk/cmdline-tools/latest"
           echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+          # Hosted images can predefine the legacy variable; keep one SDK path.
+          echo "ANDROID_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
           echo "$sdk/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$sdk/platform-tools" >> "$GITHUB_PATH"
           echo "$sdk/emulator" >> "$GITHUB_PATH"
@@ -93,6 +95,9 @@ jobs:
             -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-23 -DANDROID_STL=c++_static \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo
           cmake --build build/android
+      - name: Native static analysis
+        run: |
+          "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/clang-tidy"             -p build/android module/src/main/cpp/core/*.cpp             --checks='-*,clang-analyzer-*,bugprone-use-after-move,bugprone-sizeof-expression'             --warnings-as-errors='*' --quiet
       - name: Start Android 17 x86_64 emulator
         run: |
           android sdk install 'system-images/android-37.0/google_apis/x86_64'
