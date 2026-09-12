@@ -10,6 +10,7 @@ parser.add_argument('--serial', required=True)
 parser.add_argument('--build-dir', type=pathlib.Path, required=True)
 args = parser.parse_args()
 adb = ['adb', '-s', args.serial]
+subprocess.run(adb + ['shell', 'getprop ro.build.version.sdk; getprop ro.product.cpu.abilist; getconf PAGE_SIZE'], check=True)
 remote = '/data/local/tmp/il2cpp-dumper-tests'
 files = ['core_tests', 'elf_tests', 'runtime_tests', 'libil2cpp.so', 'librenamed_runtime.so',
          'libhidden_runtime.so', 'libmissing_runtime.so']
