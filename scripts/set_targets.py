@@ -30,6 +30,7 @@ with tempfile.TemporaryDirectory() as directory:
     file.write_text(text)
     subprocess.run(adb + ['push', str(file), remote], check=True)
     script = f'''set -e
+trap 'rm -f {remote} {staged} {module}/.verbose-{nonce} {module}/.unmount-{nonce}' EXIT
 label=$(ls -Zd {module}/module.prop | awk '{{print $1}}')
 case "$label" in *:*:*) ;; *) echo 'Cannot determine module SELinux label' >&2; exit 1;; esac
 cp {remote} {staged}
