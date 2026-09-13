@@ -6,8 +6,7 @@ on:
     inputs:
       package_name:
         description: Default target package (targets.txt can override it after installation)
-        default: com.game.packagename
-        required: false
+        required: true
         type: string
 permissions:
   contents: read

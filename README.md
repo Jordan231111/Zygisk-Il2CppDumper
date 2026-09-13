@@ -18,8 +18,6 @@ Use JDK 25 LTS (tested with Temurin 25.0.4.1), Python 3.11+, and Android SDK too
 ```sh
 git clone --branch master --recurse-submodules https://github.com/Jordan231111/Zygisk-Il2CppDumper.git
 cd Zygisk-Il2CppDumper
-# Use the modernization branch until these changes are merged:
-git switch modernization/android-il2cpp
 
 android sdk install platforms/android-37.0
 android sdk install build-tools/37.0.0
@@ -39,7 +37,7 @@ Outputs are `out/zygisk-il2cppdumper-v1.4.1-release.zip` and, for `:module:assem
 Release builds also produce `out/zygisk.zip`, a byte-identical copy of the versioned Release module. Both supported build routes use the same Gradle packaging task:
 
 - **Local:** run the Release command above and install `out/zygisk.zip`.
-- **GitHub Actions:** open **Actions → Build and test → Run workflow**, select the modernization branch, enter the default package, and download the **zygisk.zip** artifact after all jobs pass. It is uploaded directly and can be installed in Magisk as downloaded. The separate diagnostics artifact contains reports and versioned archives.
+- **GitHub Actions:** open **Actions → Build and test → Run workflow**, select `master`, enter the default package, and download the **zygisk.zip** artifact after all jobs pass. It is uploaded directly and can be installed in Magisk as downloaded. The separate diagnostics artifact contains reports and versioned archives.
 
 The library has no Java/Kotlin/AndroidX runtime dependencies. Its compile SDK is 37; a native Zygisk module inherits the target app's Android behavior and cannot change the app's target SDK.
 
@@ -53,7 +51,7 @@ adb -s DEVICE shell su -c 'magisk --install-module /data/local/tmp/il2cppdumper.
 adb -s DEVICE reboot
 ```
 
-The package supplied with `-PtargetPackage` is the default. You can change targets without rebuilding by placing a UTF-8 `targets.txt` file in `/data/adb/modules/zygisk_il2cppdumper/`. For example:
+The package supplied with `-PtargetPackage` is the default and is shown in the Magisk module description. Manual CI runs require the package name, as before. You can change targets without rebuilding by placing a UTF-8 `targets.txt` file in `/data/adb/modules/zygisk_il2cppdumper/`. For example:
 
 ```text
 com.example.authorizedapp

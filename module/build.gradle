@@ -56,7 +56,7 @@ androidComponents {
             from(rootProject.file('template/magisk_module/module.prop')) {
                 expand(id: magiskModuleId, name: moduleName, version: moduleVersion,
                         versionCode: moduleVersionCode, author: moduleAuthor,
-                        description: moduleDescription)
+                        description: "${moduleDescription} Default target: ${targetPackage}.")
                 filter(FixCrLfFilter, eol: FixCrLfFilter.CrLf.newInstance('lf'))
             }
             from(aar.map { zipTree(it) }) {
