@@ -39,7 +39,24 @@ python -m pip install -r requirements-dev.txt
 
 生成的模块位于 `out/zygisk-il2cppdumper-v1.4.2-release.zip`。在 Magisk 中安装、开启 Zygisk、重启后启动目标应用。Zygisk API 2 保留 Magisk 24+ 的接口兼容性；实际测试版本见工程报告。
 
-也可以在 `/data/adb/modules/zygisk_il2cppdumper/targets.txt` 中逐行填写目标进程名。默认精确匹配；`com.example.authorizedapp:*` 明确包含该应用的子进程。此文件覆盖构建时的默认包名，升级时保留。修改目标后，强制停止并重新启动应用。
+## 多个应用或更换目标（可选）
+
+没有 `targets.txt` 时，模块仍使用 GitHub Actions 中输入的单个包名。若想让同一个模块用于多个应用，可在 `/data/adb/modules/zygisk_il2cppdumper/targets.txt` 中每行填写一个包名：
+
+```text
+com.example.gameone
+com.example.gametwo
+```
+
+启动列表中的任意应用时，模块会在该应用自己的 `files/dump.cs` 中生成输出；模块不会自动启动应用。也可以使用辅助脚本创建或替换列表，并设置正确的权限和 SELinux 标签：
+
+```sh
+python scripts/set_targets.py --serial DEVICE com.example.gameone com.example.gametwo
+```
+
+此文件覆盖构建时的默认包名，升级模块时保留。删除文件可恢复使用 CI 中输入的包名；空文件表示不选择任何应用。修改列表后，强制停止并重新启动应用即可，无需重新构建、安装或重启设备。
+
+默认精确匹配进程名；`com.example.gameone:*` 明确包含该应用的主进程和子进程。使用 UTF-8 文本，文件大小不超过 4 KB；空行和注释行会被忽略。
 
 ## 输出与排错
 

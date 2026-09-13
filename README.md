@@ -55,32 +55,43 @@ The library has no Java/Kotlin/AndroidX runtime dependencies. Its compile SDK is
 </details>
 
 <details>
-<summary>Change targets or enable advanced options</summary>
+<summary>Use multiple apps or change targets (optional targets.txt)</summary>
 
-Install the ZIP in Magisk, enable Zygisk, reboot, and launch the selected application. From an explicitly selected device:
+**Optional:** one installed module can dump several apps. You can also change its targets without rebuilding or reinstalling it.
+
+Without a target file, the module uses the single package entered in GitHub Actions or supplied with `-PtargetPackage`, as before. To override that default, create `/data/adb/modules/zygisk_il2cppdumper/targets.txt` with **one package name per line**, for example:
+
+```text
+com.example.gameone
+com.example.gametwo
+```
+
+Open either listed app to dump it. Each app runs its own dump and writes to its own `/data/user/0/PACKAGE/files/dump.cs`; the module does not launch apps for you. The file replaces the build's default selection, rather than adding to it. Delete `targets.txt` to use the package entered in CI again; an empty file intentionally selects no apps.
+
+The helper creates or replaces the list and sets the correct permissions and SELinux label. Replace `DEVICE` with your ADB device ID and the example packages with your apps:
+
+```sh
+python scripts/set_targets.py --serial DEVICE com.example.gameone com.example.gametwo
+```
+
+After changing the list, force-stop and relaunch the selected apps. No reboot is needed for a target-list change. Module upgrades preserve the list, so it continues to override the package in a newly installed ZIP.
+
+Entries match exact process names. `com.example.gameone:worker` selects one secondary process; `com.example.gameone:*` includes the package's main and secondary processes. It cannot match `com.example.gameone2`. Secondary processes use separate output filenames. Blank/comment lines are ignored. Use UTF-8 text and keep the file at most 4 KB.
+
+A direct `adb push` into the module directory can leave an `adb_data_file` label that Zygisk cannot read. The helper copies the label from `module.prop`; it does not change SELinux policy.
+
+</details>
+
+<details>
+<summary>Advanced installation and module-mount options</summary>
+
+Install from ADB on an explicitly selected device:
 
 ```sh
 adb -s DEVICE push out/zygisk-il2cppdumper-v1.4.2-release.zip /data/local/tmp/il2cppdumper.zip
 adb -s DEVICE shell su -c 'magisk --install-module /data/local/tmp/il2cppdumper.zip'
 adb -s DEVICE reboot
 ```
-
-The package supplied with `-PtargetPackage` is the default and is shown in the Magisk module description. Manual CI runs require the package name, as before. You can change targets without rebuilding by placing a UTF-8 `targets.txt` file in `/data/adb/modules/zygisk_il2cppdumper/`. For example:
-
-```text
-com.example.authorizedapp
-com.example.anotherapp:worker
-```
-
-Entries match exact process names. `com.example.authorizedapp:*` explicitly includes that package's secondary processes. It cannot match `com.example.authorizedapp2`. Blank/comment lines are ignored. Keep the file at most 4 KB. An empty file selects no apps. The installer preserves `targets.txt` and `verbose` during upgrades; remove `targets.txt` to return to the build-time default.
-
-Use the helper to write the file atomically and match the installed module's SELinux label:
-
-```sh
-python scripts/set_targets.py --serial DEVICE com.example.authorizedapp
-```
-
-A direct `adb push` into the module directory can leave an `adb_data_file` label that Zygisk cannot read. The helper copies the label from `module.prop`; it does not change SELinux policy.
 
 To request the Zygisk provider's module-mount isolation for the selected apps:
 
@@ -90,7 +101,7 @@ python scripts/set_targets.py --serial DEVICE --unmount on com.example.authorize
 
 This optional setting invokes the public `FORCE_DENYLIST_UNMOUNT` API after configuration and any bridge payload have been copied. It affects module mounts in selected app processes and can interfere with other modules that need them. It is off by default; use `--unmount off` to disable it. It does not guarantee that root, emulation, Zygisk or debugging checks will pass. A normal dump uses no debugger attachment or application-code patches; `/proc/self/mem` is opened only if the primary kernel read path fails. Non-target processes unload the module.
 
-After a target-file change, force-stop and relaunch the selected app. A module binary update still requires a reboot. Never replace just one ABI in a module using native-bridge translation.
+A module binary update requires a reboot. Never replace just one ABI in a module using native-bridge translation.
 
 </details>
 

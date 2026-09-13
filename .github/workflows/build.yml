@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       package_name:
-        description: Default target package (targets.txt can override it after installation)
+        description: App package name (example com.example.game)
         required: true
         type: string
       full_validation:
