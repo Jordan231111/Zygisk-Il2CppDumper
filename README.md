@@ -17,7 +17,7 @@ Create a `dump.cs` file from an IL2CPP app. **Requires a rooted Android device w
 
    Replace `PACKAGE` with the package name entered in step 2.
 
-Already have a module ZIP? Start at step 4. Some protected apps remain unsupported; see [tested apps and known limits](docs/FINAL_REVIEW.md). [中文说明](README.zh-CN.md)
+Already have a module ZIP? Start at step 4. Some protected apps remain unsupported; see [tested apps and known limits](docs/FINAL_REVIEW.md). [Report an issue](https://github.com/Jordan231111/Zygisk-Il2CppDumper/issues). [中文说明](README.zh-CN.md)
 
 ---
 
