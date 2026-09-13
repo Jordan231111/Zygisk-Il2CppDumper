@@ -42,3 +42,5 @@ Metadata and code registrations remain owned by IL2CPP. The dumper does not need
 The implementation stays in C/C++ because it shares the Zygisk/Android ABI and does not justify a second Rust compiler/FFI pipeline. Small bounded components, explicit ownership and sanitizers address the observed parser problems without a complete rewrite.
 
 The assembly list is copied through the kernel and checked for stable address, count and contents, with three bounded attempts. Image/name pairs are cached once per dump. Name-cache string payload is capped at 8 MiB and type-cache string payload at 32 MiB, in addition to entry and output limits. These checks reduce known races and resource amplification; they do not lock the runtime against teardown.
+
+Unity 2021/2022 can access corlib through a GOT entry. The ARM64 profile describes that extra data load explicitly, validates both slots, and permits at most two data loads. It never calls an unready getter or embeds addresses observed in a game.

@@ -1,17 +1,28 @@
 # Zygisk-Il2CppDumper
 
-Dump IL2CPP type definitions, fields, properties, methods and native method addresses from an authorized Android application into `dump.cs`. The module runs inside the selected app through Zygisk and uses the app's live IL2CPP APIs.
+Create a `dump.cs` file from an IL2CPP app. **Requires a rooted Android device with Magisk and Zygisk enabled.**
 
-It does not reconstruct executable code, decrypt arbitrary metadata files, or promise support for every protected/custom IL2CPP runtime. See [the architecture](docs/ARCHITECTURE.md), [test evidence and limitations](docs/ENGINEERING_REPORT.md), and [中文说明](README.zh-CN.md).
+## How to use
 
-## Requirements
+1. **Fork this repository**, then open **Actions → Build and test → Run workflow** in your fork. Enable workflows if GitHub asks.
+2. Enter the app's **package name** (for example, `com.example.game`) and run the workflow.
+3. Open the successful run and download **`zygisk.zip`** from its artifacts. Keep it zipped.
+4. In **Magisk → Modules → Install from storage**, select `zygisk.zip`, then **reboot**.
+5. **Open the app** and allow the dump to finish.
+6. Use a **root file manager** to copy `dump.cs` from:
 
-- Android 6/API 23 or newer at the native ABI level. Actual runtime coverage is listed in the engineering report; compilation alone is not a compatibility claim.
-- Magisk 24+ with Zygisk enabled, or a compatible Zygisk implementation. API 2 is deliberately retained for older Magisk compatibility. Tested manager versions are listed in the report.
-- `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64` module payloads are built. Native-bridge translation is best effort and has additional vendor restrictions.
-- 4 KB and 16 KB native page sizes are supported by the build and address calculations.
+   ```text
+   /data/user/0/PACKAGE/files/dump.cs
+   ```
 
-## Build
+   Replace `PACKAGE` with the package name entered in step 2.
+
+Already have a module ZIP? Start at step 4. Some protected apps remain unsupported; see [tested apps and known limits](docs/FINAL_REVIEW.md). [中文说明](README.zh-CN.md)
+
+---
+
+<details>
+<summary>Build locally instead of using GitHub Actions</summary>
 
 Use JDK 25 LTS (tested with Temurin 25.0.4.1), Python 3.11+, and Android SDK tools. JDK 21 also builds the project. Gradle is supplied by the checksum-verified wrapper.
 
@@ -32,21 +43,24 @@ python -m pip install -r requirements-dev.txt
 
 The pinned build uses AGP 9.4.0, Gradle 9.7.1, NDK r30, CMake 4.4.3 and Ninja 1.13.2. Activate the virtual environment so AGP finds the pinned CMake/Ninja on `PATH`. Windows users can activate `.venv\Scripts\activate` and invoke `gradlew.bat`.
 
-Outputs are `out/zygisk-il2cppdumper-v1.4.1-release.zip` and, for `:module:assembleDebug`, the corresponding Debug ZIP. These are Magisk modules, not APKs. Release and Debug both isolate their C++ symbols and statically link the C++ runtime. Debug retains native debugging information before AGP's packaging strip step; unstripped binaries are under `module/build/intermediates/cxx/`.
+Outputs are `out/zygisk-il2cppdumper-v1.4.2-release.zip` and, for `:module:assembleDebug`, the corresponding Debug ZIP. These are Magisk modules, not APKs. Release and Debug both isolate their C++ symbols and statically link the C++ runtime. Debug retains native debugging information before AGP's packaging strip step; unstripped binaries are under `module/build/intermediates/cxx/`.
 
 Release builds also produce `out/zygisk.zip`, a byte-identical copy of the versioned Release module. Both supported build routes use the same Gradle packaging task:
 
 - **Local:** run the Release command above and install `out/zygisk.zip`.
-- **GitHub Actions:** open **Actions → Build and test → Run workflow**, select `master`, enter the default package, and download the **zygisk.zip** artifact after all jobs pass. It is uploaded directly and can be installed in Magisk as downloaded. The separate diagnostics artifact contains reports and versioned archives.
+- **GitHub Actions:** use the steps at the top of this page. Each successful run publishes only `zygisk.zip`; diagnostic details remain in the workflow logs.
 
 The library has no Java/Kotlin/AndroidX runtime dependencies. Its compile SDK is 37; a native Zygisk module inherits the target app's Android behavior and cannot change the app's target SDK.
 
-## Install and select targets
+</details>
+
+<details>
+<summary>Change targets or enable advanced options</summary>
 
 Install the ZIP in Magisk, enable Zygisk, reboot, and launch the selected application. From an explicitly selected device:
 
 ```sh
-adb -s DEVICE push out/zygisk-il2cppdumper-v1.4.1-release.zip /data/local/tmp/il2cppdumper.zip
+adb -s DEVICE push out/zygisk-il2cppdumper-v1.4.2-release.zip /data/local/tmp/il2cppdumper.zip
 adb -s DEVICE shell su -c 'magisk --install-module /data/local/tmp/il2cppdumper.zip'
 adb -s DEVICE reboot
 ```
@@ -78,7 +92,10 @@ This optional setting invokes the public `FORCE_DENYLIST_UNMOUNT` API after conf
 
 After a target-file change, force-stop and relaunch the selected app. A module binary update still requires a reboot. Never replace just one ABI in a module using native-bridge translation.
 
-## Output and diagnostics
+</details>
+
+<details>
+<summary>No dump? Troubleshooting and logs</summary>
 
 The default output is `<app_data_dir>/files/dump.cs`, usually `/data/user/0/PACKAGE/files/dump.cs`. Secondary processes use `dump-PROCESS_SUFFIX.cs`. Work-profile/user directories come from Zygisk and are not hard-coded.
 
@@ -100,7 +117,20 @@ If initialization times out, include the stage and readiness diagnostic. ARM64 u
 
 If required APIs cannot be resolved, dynamic and applicable file-symbol fallbacks are reported. Fully stripped/renamed APIs, erased unregistered ELF headers, inaccessible mappings, or custom runtime object layouts may remain unsupported. The module does not guess executable addresses or suppress process-wide faults.
 
-## Tests and development
+</details>
+
+<details>
+<summary>Requirements and supported devices</summary>
+
+- Android 6/API 23 or newer at the native ABI level. Actual runtime coverage is listed in the engineering report; compilation alone is not a compatibility claim.
+- Magisk 24+ with Zygisk enabled, or a compatible Zygisk implementation. API 2 is deliberately retained for older Magisk compatibility. Tested manager versions are listed in the report.
+- `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64` module payloads are built. Native-bridge translation is best effort and has additional vendor restrictions.
+- 4 KB and 16 KB native page sizes are supported by the build and address calculations.
+
+</details>
+
+<details>
+<summary>Developer tests and compatibility work</summary>
 
 ```sh
 . .venv/bin/activate
@@ -109,7 +139,7 @@ cmake --build build/host
 ctest --test-dir build/host --output-on-failure
 python scripts/check_format.py
 ./gradlew :module:assembleDebug :module:assembleRelease :module:lint --warning-mode=fail
-python scripts/verify_module.py out/zygisk-il2cppdumper-v1.4.1-release.zip \
+python scripts/verify_module.py out/zygisk-il2cppdumper-v1.4.2-release.zip \
   --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 ```
 
@@ -133,3 +163,5 @@ For a newly encountered variation, first establish the failing stage, preserve a
 For a longer deterministic ELF stress run, execute `build/host/elf_tests --stress` (200,000 mutations). Linux CI also runs 32-bit host tests, including a forced `/proc/self/mem` read above 2 GiB.
 
 GitHub Actions builds all four ABIs in Debug/Release, runs sanitizers, formatting, Android lint, archive checks, and Android 17 x86_64 synthetic runtime tests. Every action is pinned to a reviewed release commit. Proprietary application binaries, dumps, device records, and signing secrets must stay out of Git and CI artifacts.
+
+</details>

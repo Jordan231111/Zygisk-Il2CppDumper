@@ -1,5 +1,25 @@
 # Zygisk-Il2CppDumper
 
+从 IL2CPP 应用生成 `dump.cs`。**需要已 Root 的 Android 设备，并安装 Magisk、启用 Zygisk。**
+
+## 使用步骤
+
+1. **Fork 本仓库**，在自己的仓库打开 **Actions → Build and test → Run workflow**。
+2. 输入应用的**包名**（例如 `com.example.game`），运行工作流。
+3. 构建成功后，在运行结果的 artifacts 中下载 **`zygisk.zip`**，保持 ZIP 格式。
+4. 在 **Magisk → 模块 → 从本地安装**中选择该 ZIP，然后**重启设备**。
+5. **启动目标应用**，等待导出完成。
+6. 使用有 Root 权限的文件管理器，从以下位置复制 `dump.cs`：
+
+   ```text
+   /data/user/0/应用包名/files/dump.cs
+   ```
+
+已有模块 ZIP 的用户可以从第 4 步开始。部分保护版本仍不受支持，详见[测试结果与已知限制](docs/FINAL_REVIEW.md)。
+
+<details>
+<summary>详细说明：本地构建、设置、排障与开发</summary>
+
 本项目通过 Zygisk 在已授权的 Android 应用进程中调用 IL2CPP 运行时 API，生成类型、字段、属性、方法及地址信息的 `dump.cs`。不保证支持所有加壳或自定义 IL2CPP 运行时。
 
 完整的工具链、实际测试范围与限制请参阅 [英文说明](README.md)、[工程报告](docs/ENGINEERING_REPORT.md) 和 [架构说明](docs/ARCHITECTURE.md)。编译通过不代表已经验证运行兼容性。
@@ -15,7 +35,7 @@ python -m pip install -r requirements-dev.txt
 ./gradlew :module:assembleRelease -PtargetPackage=com.example.authorizedapp
 ```
 
-生成的模块位于 `out/zygisk-il2cppdumper-v1.4.1-release.zip`。在 Magisk 中安装、开启 Zygisk、重启后启动目标应用。Zygisk API 2 保留 Magisk 24+ 的接口兼容性；实际测试版本见工程报告。
+生成的模块位于 `out/zygisk-il2cppdumper-v1.4.2-release.zip`。在 Magisk 中安装、开启 Zygisk、重启后启动目标应用。Zygisk API 2 保留 Magisk 24+ 的接口兼容性；实际测试版本见工程报告。
 
 也可以在 `/data/adb/modules/zygisk_il2cppdumper/targets.txt` 中逐行填写目标进程名。默认精确匹配；`com.example.authorizedapp:*` 明确包含该应用的子进程。此文件覆盖构建时的默认包名，升级时保留。修改目标后，强制停止并重新启动应用。
 
@@ -32,3 +52,5 @@ adb -s DEVICE logcat -v threadtime 'Il2CppDumper:V' 'Unity:I' 'CRASH:E' '*:S'
 ARM64 使用经过边界检查的初始化指令模式，不识别的模式会明确失败。完全移除或改名的导出 API、特殊运行时布局及部分 NativeBridge 实现仍可能不支持。项目不再依赖固定的 `Il2CppType` 位域或固定长度的托管数组布局。
 
 请勿将游戏二进制、应用资源、私有转储或设备资料提交到仓库。
+
+</details>

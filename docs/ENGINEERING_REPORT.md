@@ -1,5 +1,7 @@
 # Engineering report — Zygisk-Il2CppDumper modernization
 
+The September 13 [final review](FINAL_REVIEW.md) contains the former-master comparison, expanded application/architecture tests, version 1.4.2 updates and final limitations. The measurements below document the initial modernization.
+
 Audit date: September 11, 2026. Original revision: `aa83f73bdf95e0674541a8ca1824e23eb8f006a7`. Work branch: `modernization/android-il2cpp`. The clone includes the complete original `master` history, not a shallow export. Changes are separated into audit, toolchain, dependency, parser/test, runtime, CI and documentation commits.
 
 This report distinguishes real Unity/Zygisk tests, synthetic runtime tests and compile-only coverage. Raw application inputs, dumps and device logs remain outside the repository.
@@ -202,7 +204,7 @@ cmake -S . -B build/host -G Ninja -DCMAKE_BUILD_TYPE=Debug -DDUMPER_SANITIZERS=O
 cmake --build build/host
 ctest --test-dir build/host --output-on-failure
 python scripts/check_format.py
-python scripts/verify_module.py out/zygisk-il2cppdumper-v1.4.0-release.zip --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+python scripts/verify_module.py out/zygisk-il2cppdumper-v1.4.2-release.zip --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 ```
 
 For native device tests, substitute the device ABI and use `darwin-x86_64` for NDK executable paths on macOS:
@@ -241,7 +243,7 @@ Real Zygisk tests additionally require a correctly installed/rooted provider; sy
 Install, select targets, enable verbose logs and collect a completed dump:
 
 ```sh
-adb -s DEVICE push out/zygisk-il2cppdumper-v1.4.0-release.zip /data/local/tmp/il2cppdumper.zip
+adb -s DEVICE push out/zygisk-il2cppdumper-v1.4.2-release.zip /data/local/tmp/il2cppdumper.zip
 adb -s DEVICE shell su -c 'magisk --install-module /data/local/tmp/il2cppdumper.zip'
 # Enable Zygisk in the chosen manager/provider, then reboot.
 adb -s DEVICE reboot
