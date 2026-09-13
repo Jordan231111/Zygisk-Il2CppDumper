@@ -38,6 +38,7 @@ jobs:
           cmake -S . -B build/host32 -G Ninja -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_BUILD_TYPE=Debug -DDUMPER_SANITIZERS=ON
           cmake --build build/host32
           ctest --test-dir build/host32 --output-on-failure --output-junit results.xml
+          build/host32/core_tests --require-high-address
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

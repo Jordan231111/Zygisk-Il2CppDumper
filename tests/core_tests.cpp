@@ -30,7 +30,17 @@ std::string read_file(const std::filesystem::path& file) {
     return std::string(std::istreambuf_iterator<char>(input), {});
 }
 } // namespace
-int main() {
+int main(int argc, char** argv) {
+    const bool require_high_address =
+        argc == 2 && std::strcmp(argv[1], "--require-high-address") == 0;
+    if (argc != 1 && !require_high_address)
+        return 2;
+#if !defined(__linux__) || UINTPTR_MAX != UINT32_MAX
+    if (require_high_address) {
+        std::cerr << "--require-high-address requires a 32-bit Linux/Android executable\n";
+        return 2;
+    }
+#endif
     using namespace dumper;
     const auto maps =
         Maps::parse("1000-2000 r--p 00004000 fe:02 11 /data/app/a b/base.apk!lib.so (deleted)\n"
@@ -224,14 +234,30 @@ int main() {
     CHECK(!proc_memory.read<uint32_t>(reinterpret_cast<uintptr_t>(arena)));
 #if UINTPTR_MAX == UINT32_MAX
     // A high-address hint without MAP_FIXED cannot overwrite an existing mapping.
-    auto* high =
-        static_cast<uint32_t*>(mmap(reinterpret_cast<void*>(0xa0000000U), page_size,
-                                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-    CHECK(high != MAP_FAILED);
-    CHECK(reinterpret_cast<uintptr_t>(high) > INT32_MAX);
-    *high = sentinel;
-    CHECK(proc_memory.read<uint32_t>(reinterpret_cast<uintptr_t>(high)) == sentinel);
-    CHECK(munmap(high, page_size) == 0);
+    uint32_t* high = nullptr;
+    for (uintptr_t hint : {0xa0000000U, 0x90000000U, 0xb0000000U, 0x80000000U}) {
+        auto* candidate = static_cast<uint32_t*>(mmap(reinterpret_cast<void*>(hint), page_size,
+                                                      PROT_READ | PROT_WRITE,
+                                                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+        if (candidate == MAP_FAILED)
+            continue;
+        if (reinterpret_cast<uintptr_t>(candidate) > INT32_MAX) {
+            high = candidate;
+            break;
+        }
+        CHECK(munmap(candidate, page_size) == 0);
+    }
+    if (high) {
+        *high = sentinel;
+        CHECK(proc_memory.read<uint32_t>(reinterpret_cast<uintptr_t>(high)) == sentinel);
+        CHECK(munmap(high, page_size) == 0);
+        std::cout << "32-bit memory read above 2 GiB passed\n";
+    } else {
+        // Some ARM kernels expose at most 2 GiB of user address space. Keep
+        // the regression mandatory on CI's 32-bit x86 runner, where it is available.
+        std::cout << "High-address mapping unavailable on this kernel\n";
+        CHECK(!require_high_address);
+    }
 #endif
 #endif
     std::cout << checks << " checks passed\n";
