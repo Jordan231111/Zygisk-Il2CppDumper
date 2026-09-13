@@ -70,6 +70,9 @@ struct FieldInfo {
     size_t offset;
     int kind;
 };
+#ifdef FIXTURE_GOT
+EXPORTED const Il2CppImage* fixture_corlib = nullptr;
+#endif
 namespace {
 Il2CppClass intptr_class{"IntPtr", "System", 0}, int_class{"Int32", "System", 0},
     string_class{"String", "System", 0}, void_class{"Void", "System", 0},
@@ -143,6 +146,9 @@ EXPORTED void fixture_configure(int value) {
     assembly_queries = 0;
     attached = 0;
     corlib = value == 4 ? nullptr : &image;
+#ifdef FIXTURE_GOT
+    fixture_corlib = corlib;
+#endif
     current_domain = value == 4 ? nullptr : &domain;
     int_class.type = &int_type;
     string_class.type = &string_type;
@@ -153,7 +159,13 @@ EXPORTED void fixture_configure(int value) {
 }
 EXPORTED int fixture_attached() { return attached; }
 EXPORTED uintptr_t fixture_method_address() { return reinterpret_cast<uintptr_t>(first_code); }
-EXPORTED const Il2CppImage* il2cpp_get_corlib() { return corlib; }
+EXPORTED const Il2CppImage* il2cpp_get_corlib() {
+#ifdef FIXTURE_GOT
+    return fixture_corlib;
+#else
+    return corlib;
+#endif
+}
 EXPORTED Il2CppDomain* il2cpp_domain_get() { return current_domain; }
 EXPORTED const Il2CppAssembly** il2cpp_domain_get_assemblies(const Il2CppDomain*, size_t* size) {
     *size = 1;

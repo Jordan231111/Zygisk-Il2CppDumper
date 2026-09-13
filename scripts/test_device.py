@@ -14,7 +14,7 @@ subprocess.run(adb + ['shell', 'getprop ro.build.version.sdk; getprop ro.product
 remote = '/data/local/tmp/il2cpp-dumper-tests'
 files = ['core_tests', 'elf_tests', 'runtime_tests', 'libil2cpp.so', 'librenamed_runtime.so',
          'libhidden_runtime.so', 'libmissing_runtime.so', 'libcapabilities_runtime.so',
-         'libcalibration_runtime.so']
+         'libcalibration_runtime.so', 'libgot_runtime.so']
 for name in files:
     if not (args.build_dir / name).is_file():
         parser.error(f'Missing {args.build_dir / name}; build the Android CMake test project first')
@@ -31,6 +31,8 @@ commands = [
     ['./runtime_tests', './libil2cpp.so', '6'],
     ['./runtime_tests', './libil2cpp.so', '7'],
     ['./runtime_tests', './libil2cpp.so', '8'],
+    ['./runtime_tests', './libgot_runtime.so', '0'],
+    ['./runtime_tests', './libgot_runtime.so', '4'],
 ]
 for command in commands:
     script = f'cd {shlex.quote(remote)} && chmod 755 *_tests && export TMPDIR=/data/local/tmp LD_LIBRARY_PATH=. && {shlex.join(command)}'

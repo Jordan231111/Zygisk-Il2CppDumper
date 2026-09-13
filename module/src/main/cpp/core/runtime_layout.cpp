@@ -21,7 +21,12 @@ std::optional<uintptr_t> add_signed(uintptr_t base, int64_t displacement) {
 std::optional<PointerGetter> aarch64_pointer_getter(uintptr_t entry, const ReadMemory& read) {
     if ((entry & 3U) != 0)
         return {};
-    std::array<std::optional<uintptr_t>, 31> registers{};
+    struct AddressValue {
+        uintptr_t address;
+        bool loaded{};
+        size_t offset{};
+    };
+    std::array<std::optional<AddressValue>, 31> registers{};
     auto pc = entry;
     unsigned branches = 0;
     for (unsigned i = 0; i < 32; ++i) {
@@ -46,32 +51,58 @@ std::optional<PointerGetter> aarch64_pointer_getter(uintptr_t entry, const ReadM
             const auto immediate =
                 ((instruction >> 29) & 3U) | (((instruction >> 5) & 0x7ffffU) << 2);
             const bool page = (instruction & 0x80000000U) != 0;
-            registers[destination] = add_signed(page ? pc & ~uintptr_t{4095} : pc,
-                                                sign_extend(immediate, 21) * (page ? 4096 : 1));
+            const auto address = add_signed(page ? pc & ~uintptr_t{4095} : pc,
+                                            sign_extend(immediate, 21) * (page ? 4096 : 1));
+            if (!address)
+                return {};
+            registers[destination] = AddressValue{*address};
             // ADRP's 4 KB unit is an ISA encoding, independent of OS page size.
         } else if ((instruction & 0xff800000U) == 0x91000000U) {
             const auto source = (instruction >> 5) & 31U;
             if (destination != 31 && source != 31 && registers[source]) {
                 const auto immediate = ((instruction >> 10) & 4095U)
                                        << (((instruction >> 22) & 1U) ? 12 : 0);
-                registers[destination] = checked_add(*registers[source], immediate);
+                auto value = *registers[source];
+                const auto updated =
+                    checked_add(value.loaded ? value.offset : value.address, immediate);
+                if (!updated)
+                    return {};
+                if (value.loaded)
+                    value.offset = *updated;
+                else
+                    value.address = *updated;
+                registers[destination] = value;
             } else if (destination != 31)
                 registers[destination].reset();
-        } else if ((instruction & 0xffc0001fU) == 0xf9400000U) {
+        } else if ((instruction & 0xffc00000U) == 0xf9400000U) {
             const auto source = (instruction >> 5) & 31U;
+            if (destination == 31 || source == 31 || !registers[source])
+                return {};
+            const auto value = *registers[source];
+            const auto offset = ((instruction >> 10) & 4095U) * 8;
             const auto next = checked_add(pc, 4);
             uint32_t branch{};
-            if (source < 31 && registers[source] && next && read(*next, &branch, sizeof(branch)) &&
-                ((branch & 0xff00001fU) == 0xb5000000U || branch == 0xd65f03c0U)) {
-                const auto slot =
-                    checked_add(*registers[source], ((instruction >> 10) & 4095U) * 8);
-                if (slot)
-                    return PointerGetter{*slot, true, branch != 0xd65f03c0U};
+            const bool returns_value =
+                destination == 0 && next && read(*next, &branch, sizeof(branch)) &&
+                ((branch & 0xff00001fU) == 0xb5000000U || branch == 0xd65f03c0U);
+            if (value.loaded) {
+                // Two data loads are sufficient for a GOT-indirect global. Do
+                // not speculate through deeper chains or arbitrary instructions.
+                const auto final_offset = checked_add(value.offset, offset);
+                if (returns_value && final_offset)
+                    return PointerGetter{value.address, true, branch != 0xd65f03c0U, *final_offset};
                 return {};
             }
-            registers[0].reset();
+            const auto slot = checked_add(value.address, offset);
+            if (!slot)
+                return {};
+            if (returns_value)
+                return PointerGetter{*slot, true, branch != 0xd65f03c0U};
+            registers[destination] = AddressValue{*slot, true, 0};
         } else if (instruction == 0xd65f03c0U && registers[0]) {
-            return PointerGetter{*registers[0], false, false};
+            const auto value = *registers[0];
+            return PointerGetter{value.address, false, false,
+                                 value.loaded ? std::optional<size_t>(value.offset) : std::nullopt};
         } else {
             // Only permit the common stack prologue and architectural landing
             // instructions before a match. Stop at calls, returns or unknown
@@ -93,7 +124,7 @@ std::optional<PointerGetter> aarch64_pointer_getter(uintptr_t entry, const ReadM
 }
 std::optional<uintptr_t> aarch64_lazy_global(uintptr_t entry, const ReadMemory& read) {
     const auto getter = aarch64_pointer_getter(entry, read);
-    if (getter && getter->lazy && getter->indirect)
+    if (getter && getter->lazy && getter->indirect && !getter->base_offset)
         return getter->address;
     return {};
 }

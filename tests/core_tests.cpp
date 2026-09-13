@@ -112,6 +112,15 @@ int main(int argc, char** argv) {
     getter[0] = 0x14000000U; // Cycle: bounded branch following must terminate.
     CHECK(!aarch64_lazy_global(code_base, read_code));
     CHECK(!aarch64_lazy_global(code_base + 1, read_code));
+    getter = {0xf0000008U, 0xf9410108U, 0xf9400100U, 0xd65f03c0U};
+    const auto got_getter = aarch64_pointer_getter(code_base, read_code);
+    CHECK(got_getter && got_getter->address == 0x103200 && got_getter->base_offset == 0 &&
+          got_getter->indirect && !got_getter->lazy);
+    getter[2] = 0xf9400900U; // LDR x0, [x8, #16].
+    const auto offset_getter = aarch64_pointer_getter(code_base, read_code);
+    CHECK(offset_getter && offset_getter->base_offset == 16);
+    getter[2] = 0xf9400108U; // Another intermediate load exceeds the supported chain.
+    CHECK(!aarch64_pointer_getter(code_base, read_code));
     std::array<uint32_t, 6> predicate{0xf0000008U, 0xf9410108U, 0xf9400908U,
                                       0xeb00011fU, 0x1a9f17e0U, 0xd65f03c0U};
     const auto read_predicate = [&](uintptr_t address, void* target, size_t size) {

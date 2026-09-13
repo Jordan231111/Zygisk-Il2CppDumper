@@ -709,12 +709,22 @@ bool dump_runtime(void* handle, const std::string& data_directory, const DumpOpt
         const auto valid_global = [&](const std::optional<PointerGetter>& getter) {
             if (!getter)
                 return false;
-            const auto* mapping = maps.find(getter->address, sizeof(uintptr_t));
+            auto address = getter->address;
+            const auto* mapping = maps.find(address, sizeof(uintptr_t));
             if (!mapping || !mapping->readable || mapping->executable)
                 return false;
-            const auto value = getter->indirect
-                                   ? readiness_memory.read<uintptr_t>(getter->address).value_or(0)
-                                   : getter->address;
+            if (getter->base_offset) {
+                const auto base = readiness_memory.read<uintptr_t>(address).value_or(0);
+                const auto slot = checked_add(untag_address(base), *getter->base_offset);
+                if (!base || !slot)
+                    return false;
+                address = *slot;
+                mapping = maps.find(address, sizeof(uintptr_t));
+                if (!mapping || !mapping->readable || mapping->executable)
+                    return false;
+            }
+            const auto value =
+                getter->indirect ? readiness_memory.read<uintptr_t>(address).value_or(0) : address;
             return value != 0 && maps.readable(value, sizeof(uintptr_t));
         };
         bool thread_ready = false;
@@ -732,14 +742,21 @@ bool dump_runtime(void* handle, const std::string& data_directory, const DumpOpt
         }
         // Some Unity releases create AppDomain lazily on the first query. The
         // validated VM-thread predicate provides an independent readiness gate.
-        if (valid_global(corlib) && (valid_global(domain) || thread_ready))
+        const bool corlib_ready = valid_global(corlib), domain_ready = valid_global(domain);
+        if (corlib_ready && (domain_ready || thread_ready))
             ++stable_samples;
         else
             stable_samples = 0;
-        if (stable_samples >= 2)
+        if (stable_samples >= 2) {
+            LOGI("stage=initialize ready corlib_GOT=%d domain_GOT=%d",
+                 corlib->base_offset.has_value(), domain && domain->base_offset.has_value());
             break;
+        }
         if (Clock::now() >= deadline) {
-            LOGE("stage=initialize fatal=runtime-getters-unready-or-unsupported");
+            LOGE("stage=initialize fatal=runtime-getters-unready-or-unsupported "
+                 "corlib_profile=%d corlib_ready=%d domain_profile=%d domain_ready=%d "
+                 "thread_ready=%d",
+                 corlib.has_value(), corlib_ready, domain.has_value(), domain_ready, thread_ready);
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
