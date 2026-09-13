@@ -20,6 +20,8 @@
 <details>
 <summary>详细说明：本地构建、设置、排障与开发</summary>
 
+手动运行工作流默认只构建 Release 并验证模块 ZIP。普通下载保持 **full_validation** 未勾选即可；代码推送和 Pull Request 会自动运行完整测试，维护者也可手动勾选该选项。
+
 本项目通过 Zygisk 在已授权的 Android 应用进程中调用 IL2CPP 运行时 API，生成类型、字段、属性、方法及地址信息的 `dump.cs`。不保证支持所有加壳或自定义 IL2CPP 运行时。
 
 完整的工具链、实际测试范围与限制请参阅 [英文说明](README.md)、[工程报告](docs/ENGINEERING_REPORT.md) 和 [架构说明](docs/ARCHITECTURE.md)。编译通过不代表已经验证运行兼容性。

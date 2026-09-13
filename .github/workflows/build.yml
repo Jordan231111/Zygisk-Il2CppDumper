@@ -8,13 +8,19 @@ on:
         description: Default target package (targets.txt can override it after installation)
         required: true
         type: string
+      full_validation:
+        description: Run maintainer tests, Debug/lint and emulator checks (slower)
+        required: false
+        default: false
+        type: boolean
 permissions:
   contents: read
 concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
+  group: build-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 jobs:
   host-tests:
+    if: github.event_name != 'workflow_dispatch' || inputs.full_validation
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -40,6 +46,8 @@ jobs:
           build/host32/core_tests --require-high-address
   android:
     needs: host-tests
+    # Package-only builds deliberately skip host tests; failed validation still blocks publishing.
+    if: ${{ !cancelled() && (needs.host-tests.result == 'success' || needs.host-tests.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -77,20 +85,25 @@ jobs:
           echo "$sdk/emulator" >> "$GITHUB_PATH"
           export ANDROID_HOME="$sdk"
           printf 'y\n%.0s' {1..100} | "$sdk/cmdline-tools/latest/bin/sdkmanager" --licenses
-      - name: Install stable Android SDK packages
+      - name: Install Android build dependencies
         run: |
           android update
-          for package in platforms/android-37.0 build-tools/37.0.0 ndk/30.0.16248370 platform-tools emulator; do
+          for package in platforms/android-37.0 build-tools/37.0.0 ndk/30.0.16248370; do
             android sdk install "$package"
           done
+      - name: Build Release module
+        if: github.event_name == 'workflow_dispatch' && !inputs.full_validation
+        run: ./gradlew ":module:assembleRelease" "-PtargetPackage=$TARGET_PACKAGE" --warning-mode=fail --console=plain
       - name: Build Debug, Release and Android lint
+        if: github.event_name != 'workflow_dispatch' || inputs.full_validation
         run: ./gradlew ":module:assembleDebug" ":module:assembleRelease" ":module:lint" "-PtargetPackage=$TARGET_PACKAGE" --warning-mode=fail --console=plain
-      - name: Verify module archives
-        run: |
-          for archive in out/*.zip; do
-            python scripts/verify_module.py "$archive" --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
-          done
+      - name: Verify installable module
+        run: python scripts/verify_module.py out/zygisk.zip --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+      - name: Verify Debug module
+        if: github.event_name != 'workflow_dispatch' || inputs.full_validation
+        run: python scripts/verify_module.py out/*-debug.zip --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
       - name: Build synthetic Android runtime tests
+        if: github.event_name != 'workflow_dispatch' || inputs.full_validation
         run: |
           cmake -S . -B build/android -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/30.0.16248370/build/cmake/android.toolchain.cmake" \
@@ -98,16 +111,21 @@ jobs:
             -DCMAKE_BUILD_TYPE=RelWithDebInfo
           cmake --build build/android
       - name: Native static analysis
+        if: github.event_name != 'workflow_dispatch' || inputs.full_validation
         run: |
           "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/clang-tidy"             -p build/android module/src/main/cpp/core/*.cpp             --checks='-*,clang-analyzer-*,bugprone-use-after-move,bugprone-sizeof-expression'             --warnings-as-errors='*' --quiet
       - name: Start Android 17 x86_64 emulator
+        if: github.event_name != 'workflow_dispatch' || inputs.full_validation
         run: |
+          android sdk install platform-tools
+          android sdk install emulator
           android sdk install 'system-images/android-37.0/google_apis/x86_64'
           sudo chmod a+rw /dev/kvm
           echo no | avdmanager create avd -n il2cpp-ci -k 'system-images;android-37.0;google_apis;x86_64' --device pixel_5
           "$ANDROID_HOME/emulator/emulator" -avd il2cpp-ci -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader -port 5554 > build/emulator.log 2>&1 &
           python scripts/wait_device.py --serial emulator-5554
       - name: Exercise native runtime and failure paths
+        if: github.event_name != 'workflow_dispatch' || inputs.full_validation
         run: python scripts/test_device.py --serial emulator-5554 --build-dir build/android
       - name: Upload directly installable Magisk module
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -116,5 +134,5 @@ jobs:
           archive: false
           if-no-files-found: error
       - name: Stop emulator
-        if: always()
+        if: always() && (github.event_name != 'workflow_dispatch' || inputs.full_validation)
         run: adb -s emulator-5554 emu kill || true

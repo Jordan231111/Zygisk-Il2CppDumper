@@ -48,7 +48,7 @@ Outputs are `out/zygisk-il2cppdumper-v1.4.2-release.zip` and, for `:module:assem
 Release builds also produce `out/zygisk.zip`, a byte-identical copy of the versioned Release module. Both supported build routes use the same Gradle packaging task:
 
 - **Local:** run the Release command above and install `out/zygisk.zip`.
-- **GitHub Actions:** use the steps at the top of this page. Each successful run publishes only `zygisk.zip`; diagnostic details remain in the workflow logs.
+- **GitHub Actions:** use the steps at the top of this page. Manual runs build the Release ZIP by default. Leave **full_validation** unchecked for the normal download. Each successful run publishes only `zygisk.zip`; diagnostic details remain in the workflow logs.
 
 The library has no Java/Kotlin/AndroidX runtime dependencies. Its compile SDK is 37; a native Zygisk module inherits the target app's Android behavior and cannot change the app's target SDK.
 
@@ -162,6 +162,6 @@ For a newly encountered variation, first establish the failing stage, preserve a
 
 For a longer deterministic ELF stress run, execute `build/host/elf_tests --stress` (200,000 mutations). Linux CI also runs 32-bit host tests, including a forced `/proc/self/mem` read above 2 GiB.
 
-GitHub Actions builds all four ABIs in Debug/Release, runs sanitizers, formatting, Android lint, archive checks, and Android 17 x86_64 synthetic runtime tests. Every action is pinned to a reviewed release commit. Proprietary application binaries, dumps, device records, and signing secrets must stay out of Git and CI artifacts.
+Pushes and pull requests run full validation: all four ABIs in Debug/Release, sanitizers, formatting, Android lint, archive checks, and Android 17 x86_64 synthetic runtime tests. Manual runs normally build Release and verify the installable ZIP; maintainers can select **full_validation** to run the full suite. Every action is pinned to a reviewed release commit. Proprietary application binaries, dumps, device records, and signing secrets must stay out of Git and CI artifacts.
 
 </details>
