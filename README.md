@@ -6,7 +6,7 @@ Create a `dump.cs` file from an IL2CPP app. **Requires a rooted Android device w
 
 1. **Fork this repository**, then open **Actions → Build and test → Run workflow** in your fork. Enable workflows if GitHub asks.
 2. Enter the app's **package name** (for example, `com.example.game`) and run the workflow.
-3. Open the successful run and download **`zygisk.zip`** from its artifacts. Keep it zipped.
+3. Open the successful run and download **`zygisk.zip`** from its artifacts.
 4. In **Magisk → Modules → Install from storage**, select `zygisk.zip`, then **reboot**.
 5. **Open the app** and allow the dump to finish.
 6. Use a **root file manager** to copy `dump.cs` from:
