@@ -57,6 +57,7 @@ class DumperModule final : public zygisk::ModuleBase {
         Fd module_directory{api_->getModuleDir()};
         std::string targets = GamePackageName;
         bool verbose = false;
+        bool unmount = false;
         if (module_directory.value >= 0) {
             Fd config{
                 openat(module_directory.value, "targets.txt", O_RDONLY | O_CLOEXEC | O_NOFOLLOW)};
@@ -80,6 +81,7 @@ class DumperModule final : public zygisk::ModuleBase {
                 return;
             }
             verbose = faccessat(module_directory.value, "verbose", F_OK, 0) == 0;
+            unmount = faccessat(module_directory.value, "unmount", F_OK, 0) == 0;
         }
         if (!dumper::matches_target(process.get(), targets)) {
             unload();
@@ -130,6 +132,13 @@ class DumperModule final : public zygisk::ModuleBase {
             }
         }
 #endif
+        if (unmount) {
+            // All module files and bridge payloads have already been copied.
+            // Let the provider isolate module mounts during specialization;
+            // this is opt-in because other modules may need those mounts.
+            api_->setOption(zygisk::Option::FORCE_DENYLIST_UNMOUNT);
+            LOGI("stage=namespace module-unmount=requested");
+        }
     }
     void postAppSpecialize(const zygisk::AppSpecializeArgs*) override {
         if (context_ && !dumper::start_worker(std::move(context_)))

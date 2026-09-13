@@ -10,6 +10,8 @@ import secrets
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--serial', required=True)
+parser.add_argument('--unmount', choices=['on', 'off'], help='Opt into provider module-mount isolation; may affect other modules in selected apps')
+parser.add_argument('--verbose', choices=['on', 'off'], help='Enable or disable per-image diagnostics')
 parser.add_argument('targets', nargs='+', help='Exact package/process names; PACKAGE:* opts into secondary processes')
 args = parser.parse_args()
 pattern = r'[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+(:[A-Za-z0-9_.*]+)?'
@@ -36,6 +38,12 @@ chcon "$label" {staged}
 mv -f {staged} {module}/targets.txt
 rm {remote}
 '''
+    for name, state in [('unmount', args.unmount), ('verbose', args.verbose)]:
+        if state == 'on':
+            option = f'{module}/.{name}-{nonce}'
+            script += f': > {option}\nchmod 644 {option}\nchcon "$label" {option}\nmv -f {option} {module}/{name}\n'
+        elif state == 'off':
+            script += f'rm -f {module}/{name}\n'
     uid = subprocess.check_output(adb + ['shell', 'id', '-u'], text=True).strip()
     command = script if uid == '0' else 'su -c ' + shlex.quote(script)
     subprocess.run(adb + ['shell', command], check=True)

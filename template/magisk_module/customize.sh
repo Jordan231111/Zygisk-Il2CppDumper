@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # Preserve explicit target/debug configuration during module upgrades.
-for config in targets.txt verbose; do
+for config in targets.txt verbose unmount; do
   old="/data/adb/modules/zygisk_il2cppdumper/$config"
   if [ -f "$old" ]; then
     cp -f "$old" "$MODPATH/$config"

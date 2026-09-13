@@ -31,11 +31,20 @@ jobs:
       - run: python scripts/check_format.py
       - run: cmake -S . -B build/host -G Ninja -DDUMPER_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug
       - run: cmake --build build/host && ctest --test-dir build/host --output-on-failure --output-junit results.xml
+      - name: Exercise 32-bit pointer and file-offset handling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++-multilib
+          cmake -S . -B build/host32 -G Ninja -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_BUILD_TYPE=Debug -DDUMPER_SANITIZERS=ON
+          cmake --build build/host32
+          ctest --test-dir build/host32 --output-on-failure --output-junit results.xml
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: host-test-results
-          path: build/host/results.xml
+          path: |
+            build/host/results.xml
+            build/host32/results.xml
           if-no-files-found: error
   android:
     runs-on: ubuntu-24.04
@@ -107,6 +116,12 @@ jobs:
           python scripts/wait_device.py --serial emulator-5554
       - name: Exercise native runtime and failure paths
         run: python scripts/test_device.py --serial emulator-5554 --build-dir build/android
+      - name: Upload directly installable Magisk module
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          path: out/zygisk.zip
+          archive: false
+          if-no-files-found: error
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

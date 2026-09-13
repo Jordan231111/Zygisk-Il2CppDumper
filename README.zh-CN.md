@@ -15,7 +15,7 @@ python -m pip install -r requirements-dev.txt
 ./gradlew :module:assembleRelease -PtargetPackage=com.example.authorizedapp
 ```
 
-生成的模块位于 `out/zygisk-il2cppdumper-v1.4.0-release.zip`。在 Magisk 中安装、开启 Zygisk、重启后启动目标应用。Zygisk API 2 保留 Magisk 24+ 的接口兼容性；实际测试版本见工程报告。
+生成的模块位于 `out/zygisk-il2cppdumper-v1.4.1-release.zip`。在 Magisk 中安装、开启 Zygisk、重启后启动目标应用。Zygisk API 2 保留 Magisk 24+ 的接口兼容性；实际测试版本见工程报告。
 
 也可以在 `/data/adb/modules/zygisk_il2cppdumper/targets.txt` 中逐行填写目标进程名。默认精确匹配；`com.example.authorizedapp:*` 明确包含该应用的子进程。此文件覆盖构建时的默认包名，升级时保留。修改目标后，强制停止并重新启动应用。
 

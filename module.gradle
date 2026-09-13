@@ -4,6 +4,6 @@ ext {
     moduleName = "Il2CppDumper"
     moduleAuthor = "Perfare"
     moduleDescription = "Il2CppDumper Zygisk version."
-    moduleVersion = "v1.4.0"
-    moduleVersionCode = 3
+    moduleVersion = "v1.4.1"
+    moduleVersionCode = 4
 }

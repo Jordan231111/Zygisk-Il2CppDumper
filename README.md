@@ -34,7 +34,12 @@ python -m pip install -r requirements-dev.txt
 
 The pinned build uses AGP 9.4.0, Gradle 9.7.1, NDK r30, CMake 4.4.3 and Ninja 1.13.2. Activate the virtual environment so AGP finds the pinned CMake/Ninja on `PATH`. Windows users can activate `.venv\Scripts\activate` and invoke `gradlew.bat`.
 
-Outputs are `out/zygisk-il2cppdumper-v1.4.0-release.zip` and, for `:module:assembleDebug`, the corresponding Debug ZIP. These are Magisk modules, not APKs. Release and Debug both isolate their C++ symbols and statically link the C++ runtime. Debug retains native debugging information before AGP's packaging strip step; unstripped binaries are under `module/build/intermediates/cxx/`.
+Outputs are `out/zygisk-il2cppdumper-v1.4.1-release.zip` and, for `:module:assembleDebug`, the corresponding Debug ZIP. These are Magisk modules, not APKs. Release and Debug both isolate their C++ symbols and statically link the C++ runtime. Debug retains native debugging information before AGP's packaging strip step; unstripped binaries are under `module/build/intermediates/cxx/`.
+
+Release builds also produce `out/zygisk.zip`, a byte-identical copy of the versioned Release module. Both supported build routes use the same Gradle packaging task:
+
+- **Local:** run the Release command above and install `out/zygisk.zip`.
+- **GitHub Actions:** open **Actions → Build and test → Run workflow**, select the modernization branch, enter the default package, and download the **zygisk.zip** artifact after all jobs pass. It is uploaded directly and can be installed in Magisk as downloaded. The separate diagnostics artifact contains reports and versioned archives.
 
 The library has no Java/Kotlin/AndroidX runtime dependencies. Its compile SDK is 37; a native Zygisk module inherits the target app's Android behavior and cannot change the app's target SDK.
 
@@ -43,7 +48,7 @@ The library has no Java/Kotlin/AndroidX runtime dependencies. Its compile SDK is
 Install the ZIP in Magisk, enable Zygisk, reboot, and launch the selected application. From an explicitly selected device:
 
 ```sh
-adb -s DEVICE push out/zygisk-il2cppdumper-v1.4.0-release.zip /data/local/tmp/il2cppdumper.zip
+adb -s DEVICE push out/zygisk-il2cppdumper-v1.4.1-release.zip /data/local/tmp/il2cppdumper.zip
 adb -s DEVICE shell su -c 'magisk --install-module /data/local/tmp/il2cppdumper.zip'
 adb -s DEVICE reboot
 ```
@@ -65,6 +70,14 @@ python scripts/set_targets.py --serial DEVICE com.example.authorizedapp
 
 A direct `adb push` into the module directory can leave an `adb_data_file` label that Zygisk cannot read. The helper copies the label from `module.prop`; it does not change SELinux policy.
 
+To request the Zygisk provider's module-mount isolation for the selected apps:
+
+```sh
+python scripts/set_targets.py --serial DEVICE --unmount on com.example.authorizedapp
+```
+
+This optional setting invokes the public `FORCE_DENYLIST_UNMOUNT` API after configuration and any bridge payload have been copied. It affects module mounts in selected app processes and can interfere with other modules that need them. It is off by default; use `--unmount off` to disable it. It does not guarantee that root, emulation, Zygisk or debugging checks will pass. A normal dump uses no debugger attachment or application-code patches; `/proc/self/mem` is opened only if the primary kernel read path fails. Non-target processes unload the module.
+
 After a target-file change, force-stop and relaunch the selected app. A module binary update still requires a reboot. Never replace just one ABI in a module using native-bridge translation.
 
 ## Output and diagnostics
@@ -75,8 +88,11 @@ A completed dump atomically replaces the previous file. An initialization, valid
 
 ```sh
 adb -s DEVICE logcat -v threadtime 'Il2CppDumper:V' 'Unity:I' 'CRASH:E' '*:S'
-adb -s DEVICE shell su -c 'cat /data/user/0/PACKAGE/files/dump.cs' > dump.cs
+python scripts/pull_dump.py --serial DEVICE \
+  --source /data/user/0/PACKAGE/files/dump.cs --output dump.cs
 ```
+
+The collection helper verifies SHA-256 and preserves an existing local output if transfer fails; it avoids newline conversion in root shells.
 
 Create `/data/adb/modules/zygisk_il2cppdumper/verbose` to log per-image progress on the next launch. Remove it to return to normal logging. Logs identify the process, ABI, API level, page size, ELF load bias, resolution strategy, readiness stage, metadata header/source when visible, method-layout calibration, counts, output path, elapsed time, and failure reason. `stage=complete` confirms a checked, published file.
 
@@ -95,7 +111,7 @@ cmake --build build/host
 ctest --test-dir build/host --output-on-failure
 python scripts/check_format.py
 ./gradlew :module:assembleDebug :module:assembleRelease :module:lint --warning-mode=fail
-python scripts/verify_module.py out/zygisk-il2cppdumper-v1.4.0-release.zip \
+python scripts/verify_module.py out/zygisk-il2cppdumper-v1.4.1-release.zip \
   --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 ```
 
@@ -112,8 +128,10 @@ cmake --build build/android
 python scripts/test_device.py --serial DEVICE --build-dir build/android
 ```
 
-Use `x86_64` when building tests for an x86_64 emulator. These fixtures exercise the real resolver/dumper against a synthetic runtime, including shifted layouts, legacy reflection, file-only symbols, map discovery, malformed counts, missing APIs, timeout, and atomic output failures. They do not claim to substitute for live Unity/Zygisk testing.
+Use `x86_64` when building tests for an x86_64 emulator. These fixtures exercise the real resolver/dumper against a synthetic runtime, including shifted layouts, legacy reflection, file-only capability groups, map discovery, malformed counts, changing assembly arrays, missing APIs, timeout, and atomic output failures. Exact recovered method RVAs and concurrent fallback readers are checked. They do not claim to substitute for live Unity/Zygisk testing.
 
 For a newly encountered variation, first establish the failing stage, preserve a private runtime baseline, and add a minimal synthetic regression. Prefer runtime APIs over copying private Unity structs. Keep new instruction/layout profiles bounded and centralized in `core/runtime_layout.*`; add negative and overflow tests. See [architecture and compatibility guidance](docs/ARCHITECTURE.md).
+
+For a longer deterministic ELF stress run, execute `build/host/elf_tests --stress` (200,000 mutations). Linux CI also runs 32-bit host tests, including a forced `/proc/self/mem` read above 2 GiB.
 
 GitHub Actions builds all four ABIs in Debug/Release, runs sanitizers, formatting, Android lint, archive checks, and Android 17 x86_64 synthetic runtime tests. Every action is pinned to a reviewed release commit. Proprietary application binaries, dumps, device records, and signing secrets must stay out of Git and CI artifacts.

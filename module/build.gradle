@@ -75,6 +75,14 @@ androidComponents {
             preserveFileTimestamps = false
             reproducibleFileOrder = true
         }
+        if (variant.name == 'release') {
+            def installable = tasks.register('copyInstallableZip', Copy) {
+                from(archive.flatMap { it.archiveFile })
+                into(rootProject.layout.projectDirectory.dir('out'))
+                rename { 'zygisk.zip' }
+            }
+            archive.configure { finalizedBy(installable) }
+        }
         tasks.matching { it.name == "assemble${suffix}" }.configureEach {
             finalizedBy(archive)
         }
