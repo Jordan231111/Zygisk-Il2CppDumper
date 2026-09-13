@@ -13,6 +13,8 @@ struct Il2CppApi {
 #include "il2cpp-api-functions.h"
 #undef API
     bool load(void* handle, std::string& error);
+    bool can_enumerate() const;
+    bool can_calibrate_methods() const;
     elf::Image module_image;
 
   private:

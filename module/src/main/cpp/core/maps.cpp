@@ -137,7 +137,7 @@ bool Maps::executable(uintptr_t address) const {
     return entry && entry->executable;
 }
 
-Memory::Memory() : fd_(open("/proc/self/mem", O_RDONLY | O_CLOEXEC)) {}
+Memory::Memory(Backend backend) : backend_(backend) {}
 Memory::~Memory() {
     if (fd_ >= 0)
         close(fd_);
@@ -149,21 +149,40 @@ bool Memory::read(uintptr_t address, void* destination, size_t size) const {
     if (!destination || address == 0 || size > std::numeric_limits<uintptr_t>::max() - address ||
         size > static_cast<size_t>(std::numeric_limits<ssize_t>::max()))
         return false;
+    if (backend_ == Backend::Automatic) {
 #if defined(__linux__)
-    iovec local{destination, size};
-    iovec remote{reinterpret_cast<void*>(address), size};
-    ssize_t result;
-    do {
-        result = process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
-    } while (result < 0 && errno == EINTR);
-    if (result == static_cast<ssize_t>(size))
-        return true;
+        iovec local{destination, size};
+        iovec remote{reinterpret_cast<void*>(address), size};
+        ssize_t result;
+        do {
+            result = process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
+        } while (result < 0 && errno == EINTR);
+        if (result == static_cast<ssize_t>(size))
+            return true;
 #endif
-    if (fd_ < 0 || address > static_cast<uintptr_t>(std::numeric_limits<off_t>::max()))
+    }
+#if defined(__linux__)
+    // off_t is 32-bit on Android's 32-bit ABIs unless large-file mode is enabled.
+    // Process addresses above 2 GiB are valid offsets in /proc/self/mem.
+    using Offset = off64_t;
+#else
+    using Offset = off_t;
+#endif
+    const uint64_t file_offset = address;
+    if (file_offset > static_cast<uint64_t>(std::numeric_limits<Offset>::max()))
+        return false;
+    // The usual process_vm_readv path needs no persistent /proc/self/mem fd.
+    // Open the fallback only on demand, once even when readers share this object.
+    std::call_once(open_memory_, [this] { fd_ = open("/proc/self/mem", O_RDONLY | O_CLOEXEC); });
+    if (fd_ < 0)
         return false;
     ssize_t count;
     do {
-        count = pread(fd_, destination, size, static_cast<off_t>(address));
+#if defined(__linux__)
+        count = pread64(fd_, destination, size, static_cast<Offset>(file_offset));
+#else
+        count = pread(fd_, destination, size, static_cast<Offset>(file_offset));
+#endif
     } while (count < 0 && errno == EINTR);
     return count == static_cast<ssize_t>(size);
 }
@@ -221,7 +240,7 @@ bool Memory::read_pointers(std::span<const uintptr_t> addresses,
             remote[i] = {reinterpret_cast<void*>(address), sizeof(uintptr_t)};
         }
         ssize_t read_bytes = -1;
-        if (valid) {
+        if (valid && backend_ == Backend::Automatic) {
             do {
                 read_bytes =
                     process_vm_readv(getpid(), local.data(), count, remote.data(), count, 0);

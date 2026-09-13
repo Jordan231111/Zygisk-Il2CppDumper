@@ -80,8 +80,25 @@ Il2CppApi::~Il2CppApi() {
     if (native_handle_)
         dlclose(native_handle_);
 }
+bool Il2CppApi::can_enumerate() const {
+    return (image_get_class && image_get_class_count) ||
+           (class_from_name && class_get_method_from_name && runtime_invoke &&
+            class_from_system_type && string_new && object_get_class && object_unbox);
+}
+bool Il2CppApi::can_calibrate_methods() const {
+    return class_from_name && class_get_field_from_name && field_static_get_value &&
+           field_get_value && object_get_class && runtime_class_init;
+}
 bool Il2CppApi::load(void* handle, std::string& error) {
     error.clear();
+    if (native_handle_) {
+        dlclose(native_handle_);
+        native_handle_ = nullptr;
+    }
+#define API(result, name, parameters, required) name = nullptr;
+#include "il2cpp-api-functions.h"
+#undef API
+    module_image = {};
     const auto maps = Maps::read_self();
     Memory memory;
     xdl_info_t info{};
@@ -152,6 +169,9 @@ bool Il2CppApi::load(void* handle, std::string& error) {
         needs_file = true;
 #include "il2cpp-api-functions.h"
 #undef API
+    // Optional exports can form a required capability group. Recover those
+    // groups before deciding that enumeration or native addresses are unavailable.
+    needs_file |= !can_enumerate() || !can_calibrate_methods();
     if (needs_file) {
         const auto symbols = local_symbols(info.dli_fname, module_image, memory);
 #define API(result, name, parameters, required)                                                    \
@@ -177,9 +197,7 @@ bool Il2CppApi::load(void* handle, std::string& error) {
          native_count, dynamic_count, file_count, error.empty() ? "none" : error.c_str());
     if (!error.empty())
         return false;
-    if (!(image_get_class && image_get_class_count) &&
-        !(class_from_name && class_get_method_from_name && runtime_invoke &&
-          class_from_system_type && string_new && object_get_class && object_unbox)) {
+    if (!can_enumerate()) {
         error = "neither image enumeration nor managed reflection is available";
         return false;
     }

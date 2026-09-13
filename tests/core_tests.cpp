@@ -4,6 +4,7 @@
 #include "core/runtime_layout.h"
 #include "core/target.h"
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +12,7 @@
 #include <limits>
 #include <string>
 #include <sys/mman.h>
+#include <thread>
 #include <unistd.h>
 
 namespace {
@@ -143,6 +145,10 @@ int main() {
         CHECK(!output.good());
     }
     {
+        AtomicOutput output(dir, std::string("dump.cs\0suffix", 14));
+        CHECK(!output.good());
+    }
+    {
         AtomicOutput output((root / "missing").string());
         CHECK(!output.good());
     }
@@ -153,8 +159,40 @@ int main() {
     }
     std::filesystem::remove_all(root);
 #if defined(__linux__)
+    const auto memory_fds = [] {
+        size_t count = 0;
+        for (const auto& item : std::filesystem::directory_iterator("/proc/self/fd")) {
+            std::error_code error;
+            const auto target = std::filesystem::read_symlink(item.path(), error);
+            if (!error && target.filename() == "mem")
+                ++count;
+        }
+        return count;
+    };
+    const auto before_fds = memory_fds();
+    {
+        Memory unused;
+        Memory shared(Memory::Backend::ProcMem);
+        CHECK(memory_fds() == before_fds);
+        std::atomic<bool> valid{true};
+        std::array<std::thread, 4> readers;
+        for (auto& reader : readers)
+            reader = std::thread([&] {
+                for (unsigned i = 0; i < 1000; ++i)
+                    if (shared.read<uint32_t>(reinterpret_cast<uintptr_t>(&sentinel)) != sentinel)
+                        valid = false;
+            });
+        for (auto& reader : readers)
+            reader.join();
+        CHECK(valid);
+        CHECK(memory_fds() == before_fds + 1);
+    }
+    CHECK(memory_fds() == before_fds);
     Memory memory;
+    Memory proc_memory(Memory::Backend::ProcMem);
     CHECK(memory.read<uint32_t>(reinterpret_cast<uintptr_t>(&sentinel)) == sentinel);
+    CHECK(proc_memory.read<uint32_t>(reinterpret_cast<uintptr_t>(&sentinel)) == sentinel);
+    CHECK(!proc_memory.read<uint32_t>(1));
     CHECK(!memory.read<uint32_t>(0));
     CHECK(!memory.read<uint32_t>(1));
     CHECK(!memory.read<uint32_t>(std::numeric_limits<uintptr_t>::max()));
@@ -166,6 +204,8 @@ int main() {
     CHECK(received[0] == 0x1234 && received[1] == 0 && received[2] == 0x5678);
     addresses[1] = addresses[0];
     CHECK(memory.read_pointers(addresses, received));
+    CHECK(proc_memory.read_pointers(addresses, received));
+    CHECK(received[0] == 0x1234 && received[1] == 0x1234 && received[2] == 0x5678);
     CHECK(received[1] == 0x1234);
     CHECK(!memory.read_pointers(addresses, std::span<uintptr_t>(received).first(1)));
     const size_t page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
@@ -181,6 +221,18 @@ int main() {
     std::memset(arena, 'x', 8);
     CHECK(!memory.string(reinterpret_cast<uintptr_t>(arena), stale_maps, 8));
     CHECK(munmap(arena, 2 * page_size) == 0);
+    CHECK(!proc_memory.read<uint32_t>(reinterpret_cast<uintptr_t>(arena)));
+#if UINTPTR_MAX == UINT32_MAX
+    // A high-address hint without MAP_FIXED cannot overwrite an existing mapping.
+    auto* high =
+        static_cast<uint32_t*>(mmap(reinterpret_cast<void*>(0xa0000000U), page_size,
+                                    PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    CHECK(high != MAP_FAILED);
+    CHECK(reinterpret_cast<uintptr_t>(high) > INT32_MAX);
+    *high = sentinel;
+    CHECK(proc_memory.read<uint32_t>(reinterpret_cast<uintptr_t>(high)) == sentinel);
+    CHECK(munmap(high, page_size) == 0);
+#endif
 #endif
     std::cout << checks << " checks passed\n";
 }

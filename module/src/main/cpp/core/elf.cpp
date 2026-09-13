@@ -272,6 +272,10 @@ std::unordered_map<std::string, uint64_t> parse_file(std::span<const std::byte> 
             if (!symbol || symbol->section == 0 || symbol->section >= 0xff00 ||
                 ((symbol->info & 15U) != 2 && (symbol->info & 15U) != 0))
                 continue;
+            if (symbol->section >= header->shnum) {
+                fail(error, "file symbol section out of bounds");
+                return {};
+            }
             if (symbol->name >= strings->size) {
                 fail(error, "file symbol name out of bounds");
                 return {};
@@ -297,7 +301,8 @@ bool Image::contains(uintptr_t address, size_t size, uint32_t flags) const {
         if (segment.type != kLoad || (segment.flags & flags) != flags)
             continue;
         const auto begin = address_add(load_bias, segment.vaddr);
-        if (!begin || segment.memsz > std::numeric_limits<uintptr_t>::max() || address < *begin)
+        if (!begin || segment.memsz > std::numeric_limits<uintptr_t>::max() - *begin ||
+            address < *begin)
             continue;
         const auto offset = address - *begin;
         if (offset <= segment.memsz && size <= segment.memsz - offset)

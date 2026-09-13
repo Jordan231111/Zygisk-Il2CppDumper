@@ -6,6 +6,7 @@
 #include <random>
 namespace {
 size_t checks{};
+unsigned mutation_rounds = 1000;
 #define CHECK(condition)                                                                           \
     do {                                                                                           \
         ++checks;                                                                                  \
@@ -97,6 +98,16 @@ template <class H, class P, class D, class S, class Sh, class Word> void exercis
     parse(true);
     std::string error;
     CHECK(file_symbols(data, error).at("il2cpp_test") == 1280);
+    auto invalid_section = symbol;
+    invalid_section.section = 9000;
+    put(data, 768 + sizeof(S), invalid_section);
+    CHECK(file_symbols(data, error).empty());
+    CHECK(error == "file symbol section out of bounds");
+    data = original;
+    Image overflowing;
+    overflowing.load_bias = std::numeric_limits<uintptr_t>::max() - 16;
+    overflowing.segments.push_back({kLoad, kRead, 0, 0, 32, 32});
+    CHECK(!overflowing.contains(overflowing.load_bias, 32, kRead));
     // Dynamic lookup works without a section table and with relocated pointers.
     header.shnum = 0;
     put(data, 0, header);
@@ -212,7 +223,7 @@ template <class H, class P, class D, class S, class Sh, class Word> void exercis
     data = original;
     // Deterministic mutation corpus: no copyrighted binaries or external fixtures.
     std::mt19937 random(17);
-    for (unsigned round = 0; round < 1000; ++round) {
+    for (unsigned round = 0; round < mutation_rounds; ++round) {
         data = original;
         for (unsigned j = 0; j < 8; ++j)
             data[random() % data.size()] = std::byte(random() & 255U);
@@ -225,9 +236,13 @@ template <class H, class P, class D, class S, class Sh, class Word> void exercis
     }
 }
 } // namespace
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 2 && std::strcmp(argv[1], "--stress") == 0)
+        mutation_rounds = 100000;
+    else if (argc != 1)
+        return 2;
     using namespace dumper::elf;
     exercise<Header32, Program32, Dynamic32, Symbol32, Section32, uint32_t>();
     exercise<Header64, Program64, Dynamic64, Symbol64, Section64, uint64_t>();
-    std::cout << checks << " ELF checks and 2000 mutation cases passed\n";
+    std::cout << checks << " ELF checks and " << 2 * mutation_rounds << " mutation cases passed\n";
 }

@@ -7,6 +7,17 @@
 #define FIXTURE_LAYOUT_WORDS 0
 #endif
 #define EXPORTED extern "C" __attribute__((visibility("default")))
+#define HIDDEN_API extern "C" __attribute__((visibility("hidden"), used, retain))
+#ifdef FIXTURE_HIDE_CAPABILITIES
+#define ENUMERATION_API HIDDEN_API
+#else
+#define ENUMERATION_API EXPORTED
+#endif
+#if defined(FIXTURE_HIDE_CAPABILITIES) || defined(FIXTURE_HIDE_CALIBRATION)
+#define CALIBRATION_API HIDDEN_API
+#else
+#define CALIBRATION_API EXPORTED
+#endif
 struct Il2CppDomain {
     uintptr_t marker{42};
 };
@@ -73,6 +84,8 @@ Il2CppType intptr_type{&intptr_class}, int_type{&int_class}, string_type{&string
 Il2CppImage image{"Fixture.dll"};
 Il2CppAssembly assembly{&image};
 const Il2CppAssembly* assemblies[]{&assembly};
+const Il2CppAssembly* alternate_assemblies[]{&assembly};
+unsigned assembly_queries{};
 Il2CppDomain domain;
 Il2CppDomain* current_domain = &domain;
 const Il2CppImage* corlib = &image;
@@ -127,6 +140,7 @@ template <class T, size_t N> T* iterate(const std::array<T*, N>& values, void** 
 } // namespace
 EXPORTED void fixture_configure(int value) {
     mode = value;
+    assembly_queries = 0;
     attached = 0;
     corlib = value == 4 ? nullptr : &image;
     current_domain = value == 4 ? nullptr : &domain;
@@ -138,10 +152,14 @@ EXPORTED void fixture_configure(int value) {
     state_class.type = &state_type;
 }
 EXPORTED int fixture_attached() { return attached; }
+EXPORTED uintptr_t fixture_method_address() { return reinterpret_cast<uintptr_t>(first_code); }
 EXPORTED const Il2CppImage* il2cpp_get_corlib() { return corlib; }
 EXPORTED Il2CppDomain* il2cpp_domain_get() { return current_domain; }
 EXPORTED const Il2CppAssembly** il2cpp_domain_get_assemblies(const Il2CppDomain*, size_t* size) {
     *size = 1;
+    ++assembly_queries;
+    if ((mode == 7 && assembly_queries % 2 == 0) || (mode == 8 && assembly_queries > 1))
+        return alternate_assemblies;
     return assemblies;
 }
 EXPORTED const Il2CppImage* il2cpp_assembly_get_image(const Il2CppAssembly* value) {
@@ -218,8 +236,10 @@ EXPORTED const Il2CppType* il2cpp_field_get_type(FieldInfo* field) { return fiel
 EXPORTED const char* il2cpp_field_get_name(FieldInfo* field) { return field->name; }
 EXPORTED size_t il2cpp_field_get_offset(FieldInfo* field) { return field->offset; }
 #ifndef FIXTURE_LEGACY
-EXPORTED size_t il2cpp_image_get_class_count(const Il2CppImage*) { return mode == 2 ? 1000001 : 2; }
-EXPORTED const Il2CppClass* il2cpp_image_get_class(const Il2CppImage*, size_t index) {
+ENUMERATION_API size_t il2cpp_image_get_class_count(const Il2CppImage*) {
+    return mode == 2 ? 1000001 : 2;
+}
+ENUMERATION_API const Il2CppClass* il2cpp_image_get_class(const Il2CppImage*, size_t index) {
     return index == 0 ? &player_class : &state_class;
 }
 #endif
@@ -249,6 +269,8 @@ EXPORTED const MethodInfo* il2cpp_class_get_method_from_name(Il2CppClass*, const
     return nullptr;
 }
 EXPORTED FieldInfo* il2cpp_class_get_field_from_name(Il2CppClass*, const char* name) {
+    if (mode == 6)
+        return nullptr;
     for (auto* field : {&filter_first, &filter_second, &delegate_pointer, &delegate_method})
         if (std::strcmp(name, field->name) == 0)
             return field;
@@ -278,7 +300,7 @@ EXPORTED Il2CppObject* il2cpp_runtime_invoke(const MethodInfo* method, void*, vo
         return nullptr;
     }
 }
-EXPORTED Il2CppClass* il2cpp_class_from_system_type(Il2CppReflectionType* type) {
+ENUMERATION_API Il2CppClass* il2cpp_class_from_system_type(Il2CppReflectionType* type) {
     return reinterpret_cast<Il2CppClass*>(reinterpret_cast<Il2CppObject*>(type)->value);
 }
 EXPORTED Il2CppString* il2cpp_string_new(const char* value) {
@@ -297,4 +319,4 @@ EXPORTED void il2cpp_field_get_value(Il2CppObject* object, FieldInfo* field, voi
         field->kind == 4 ? reinterpret_cast<uintptr_t>(method->pointer) : object->value;
     std::memcpy(destination, &value, sizeof(value));
 }
-EXPORTED void il2cpp_runtime_class_init(Il2CppClass*) {}
+CALIBRATION_API void il2cpp_runtime_class_init(Il2CppClass*) {}

@@ -11,8 +11,9 @@ void AtomicOutput::fail(std::string_view operation) {
 }
 AtomicOutput::AtomicOutput(const std::string& directory, std::string filename)
     : filename_(std::move(filename)) {
-    if (filename_.empty() || filename_.find('/') != std::string::npos || filename_ == "." ||
-        filename_ == "..") {
+    if (filename_.empty() ||
+        filename_.find_first_of(std::string_view("/\0", 2)) != std::string::npos ||
+        filename_ == "." || filename_ == "..") {
         error_ = "invalid output filename";
         return;
     }

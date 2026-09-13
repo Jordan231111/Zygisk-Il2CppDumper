@@ -29,8 +29,41 @@ constexpr size_t kMaxParameters = 4096;
 constexpr std::streamoff kMaxClassBytes = 16 * 1024 * 1024;
 constexpr size_t kMaxOutputBytes = 1024ULL * 1024 * 1024;
 constexpr size_t kMaxNameBytes = 65536;
+constexpr size_t kMaxNameCacheBytes = 8 * 1024 * 1024;
+constexpr size_t kMaxTypeCacheBytes = 32 * 1024 * 1024;
 constexpr auto kDumpTimeout = std::chrono::minutes(5);
 using Clock = std::chrono::steady_clock;
+
+bool snapshot_assemblies(Il2CppApi& api, const Il2CppDomain* domain, const Memory& memory,
+                         std::vector<const Il2CppAssembly*>& snapshot, std::string& error) {
+    // Assembly loading can reallocate the runtime's borrowed array. Copy through
+    // the kernel, then verify its address, count and contents before using it.
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        size_t count{};
+        const auto** source = api.domain_get_assemblies(domain, &count);
+        if (!source || count == 0 || count > kMaxAssemblies) {
+            error = "invalid-assembly-count count=" + std::to_string(count);
+            return false;
+        }
+        snapshot.resize(count);
+        if (memory.read(reinterpret_cast<uintptr_t>(source), snapshot.data(),
+                        count * sizeof(void*))) {
+            size_t current_count{};
+            const auto** current = api.domain_get_assemblies(domain, &current_count);
+            if (current == source && current_count == count) {
+                std::vector<const Il2CppAssembly*> verification(count);
+                if (memory.read(reinterpret_cast<uintptr_t>(current), verification.data(),
+                                count * sizeof(void*)) &&
+                    verification == snapshot)
+                    return true;
+            }
+        }
+        if (attempt < 2)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    error = "assembly-array-unreadable-or-changing";
+    return false;
+}
 
 std::string access_modifier(uint32_t flags, bool method) {
     const auto access = flags & 7U; // ECMA-335 member access bits, identical for fields/methods.
@@ -91,8 +124,10 @@ class Writer {
             if (byte < 32 || byte == 127)
                 character = '?';
         }
-        if (names_.size() < 65536)
+        if (names_.size() < 65536 && result->size() <= kMaxNameCacheBytes - name_cache_bytes_) {
+            name_cache_bytes_ += result->size();
             names_.emplace(pointer, *result);
+        }
         return *result;
     }
 
@@ -115,10 +150,12 @@ class Writer {
         // Byref is written as ref/out/in by the member formatter.
         if (!result.empty() && result.back() == '&')
             result.pop_back();
-        if (type_names_.size() >= 1000000) {
+        if (type_names_.size() >= 1000000 ||
+            result.size() > kMaxTypeCacheBytes - type_cache_bytes_) {
             error = "runtime type cache limit exceeded";
             return "<type-limit>";
         }
+        type_cache_bytes_ += result.size();
         return type_names_.emplace(type, std::move(result)).first->second;
     }
 
@@ -167,59 +204,80 @@ class Writer {
     }
 
     void calibrate_method_layout() {
-        if (!(api_.class_from_name && api_.class_get_field_from_name &&
-              api_.field_static_get_value && api_.field_get_value && api_.object_get_class &&
-              api_.runtime_class_init)) {
-            LOGW("method_address_strategy=unavailable (calibration APIs absent)");
+        const auto unavailable = [](const char* reason) {
+            LOGW("method_address_strategy=unavailable reason=%s", reason);
+        };
+        if (!api_.can_calibrate_methods()) {
+            unavailable("calibration-APIs-absent");
             return;
         }
         auto* module = api_.class_from_name(api_.get_corlib(), "System.Reflection", "Module");
-        if (!module)
+        if (!module) {
+            unavailable("System.Reflection.Module-absent");
             return;
+        }
         api_.runtime_class_init(module);
         std::optional<size_t> candidate;
         for (const char* field_name : {"FilterTypeName", "FilterTypeNameIgnoreCase"}) {
             auto* field = api_.class_get_field_from_name(module, field_name);
-            if (!field)
+            if (!field || !(api_.field_get_flags(field) & FIELD_ATTRIBUTE_STATIC)) {
+                unavailable("static-filter-field-absent");
                 return;
+            }
             const auto* field_type = api_.field_get_type(field);
             auto* field_class = field_type ? api_.class_from_type(field_type) : nullptr;
-            if (!field_class || api_.class_is_valuetype(field_class))
+            if (!field_class || api_.class_is_valuetype(field_class)) {
+                unavailable("filter-field-is-not-reference-type");
                 return;
+            }
             Il2CppObject* delegate = nullptr;
             api_.field_static_get_value(field, &delegate);
-            if (!delegate)
+            if (!delegate) {
+                unavailable("null-filter-delegate");
                 return;
+            }
             auto* klass = api_.object_get_class(delegate);
-            if (!klass)
+            if (!klass) {
+                unavailable("delegate-class-absent");
                 return;
+            }
             auto* pointer_field = api_.class_get_field_from_name(klass, "method_ptr");
             auto* method_field = api_.class_get_field_from_name(klass, "method");
-            if (!pointer_field || !method_field)
+            if (!pointer_field || !method_field) {
+                unavailable("delegate-fields-absent");
                 return;
+            }
             for (auto* item : {pointer_field, method_field}) {
                 const auto field_name_type = type_name(api_.field_get_type(item));
-                if (field_name_type != "System.IntPtr" && field_name_type != "System.UIntPtr")
+                if (field_name_type != "System.IntPtr" && field_name_type != "System.UIntPtr") {
+                    unavailable("delegate-field-is-not-pointer-sized");
                     return;
+                }
             }
             uintptr_t pointer{}, method{};
             api_.field_get_value(delegate, pointer_field, &pointer);
             api_.field_get_value(delegate, method_field, &method);
-            if (!pointer || !method || !maps_.executable(pointer))
+            if (!pointer || !method || !maps_.executable(pointer)) {
+                unavailable("invalid-delegate-address");
                 return;
+            }
             std::optional<size_t> found;
             for (size_t offset = 0; offset < 8 * sizeof(uintptr_t); offset += sizeof(uintptr_t)) {
                 const auto address = checked_add(untag_address(method), offset);
-                if (!address)
+                if (!address) {
+                    unavailable("method-address-overflow");
                     return;
+                }
                 const auto value = memory_.read<uintptr_t>(*address);
                 if (value && *value == pointer) {
                     found = offset;
                     break;
                 }
             }
-            if (!found || (candidate && candidate != found))
+            if (!found || (candidate && candidate != found)) {
+                unavailable("unrecognized-or-inconsistent-method-layout");
                 return;
+            }
             candidate = found;
         }
         method_offset_ = candidate;
@@ -306,6 +364,10 @@ class Writer {
         if (!methods(out, klass))
             return false;
         out << "}\n";
+        if (out.tellp() > kMaxClassBytes) {
+            error = "class output size limit exceeded";
+            return false;
+        }
         if (!error.empty())
             return false;
         auto text = out.str();
@@ -494,7 +556,11 @@ class Writer {
                 type = api_.method_get_return_type(get);
             else if (set) {
                 const auto n = api_.method_get_param_count(set);
-                if (n > 0 && n <= kMaxMembersPerClass)
+                if (n > kMaxParameters) {
+                    error = "invalid setter parameter count";
+                    return false;
+                }
+                if (n > 0)
                     type = api_.method_get_param(set, n - 1);
             }
             if (!type) {
@@ -604,6 +670,7 @@ class Writer {
     Memory memory_;
     std::unordered_map<const Il2CppType*, std::string> type_names_;
     std::unordered_map<const char*, std::string> names_;
+    size_t name_cache_bytes_{}, type_cache_bytes_{};
     std::optional<size_t> method_offset_;
     Clock::time_point deadline_{Clock::now() + kDumpTimeout};
 };
@@ -708,19 +775,13 @@ bool dump_runtime(void* handle, const std::string& data_directory, const DumpOpt
                 api.thread_detach(thread);
         }
     } attachment{api, thread, previous_thread == nullptr};
-    size_t count{};
-    const auto** assemblies = api.domain_get_assemblies(domain, &count);
-    if (!assemblies || count == 0 || count > kMaxAssemblies) {
-        LOGE("stage=enumerate fatal=invalid-assembly-count count=%zu", count);
-        return false;
-    }
     Memory memory;
-    std::vector<const Il2CppAssembly*> snapshot(count);
-    if (!memory.read(reinterpret_cast<uintptr_t>(assemblies), snapshot.data(),
-                     count * sizeof(void*))) {
-        LOGE("stage=enumerate fatal=unreadable-assembly-array");
+    std::vector<const Il2CppAssembly*> snapshot;
+    if (!snapshot_assemblies(api, domain, memory, snapshot, error)) {
+        LOGE("stage=enumerate fatal=%s", error.c_str());
         return false;
     }
+    const size_t count = snapshot.size();
     const std::string directory = data_directory + "/files";
     if (mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST) {
         LOGE("stage=output fatal=mkdir-failed errno=%d", errno);
@@ -745,6 +806,12 @@ bool dump_runtime(void* handle, const std::string& data_directory, const DumpOpt
     writer.calibrate_method_layout();
     output.write("// Zygisk-Il2CppDumper: live runtime API dump\n// Metadata and registrations are "
                  "supplied by IL2CPP; no private metadata layout is assumed.\n");
+    struct ImageSnapshot {
+        const Il2CppImage* image;
+        std::string name;
+    };
+    std::vector<ImageSnapshot> images;
+    images.reserve(count);
     for (size_t i = 0; i < count; ++i) {
         if (!snapshot[i]) {
             LOGE("stage=enumerate fatal=null-assembly index=%zu", i);
@@ -755,8 +822,11 @@ bool dump_runtime(void* handle, const std::string& data_directory, const DumpOpt
             LOGE("stage=enumerate fatal=null-image index=%zu", i);
             return false;
         }
-        output.write("// Image " + std::to_string(i) + ": " +
-                     writer.name(api.image_get_name(image)) + "\n");
+        images.push_back({image, writer.name(api.image_get_name(image))});
+        if (!output.write("// Image " + std::to_string(i) + ": " + images.back().name + "\n")) {
+            LOGE("stage=output fatal=%s", output.error().c_str());
+            return false;
+        }
     }
     const bool image_api = api.image_get_class && api.image_get_class_count;
     bool metadata_found = false;
@@ -777,9 +847,9 @@ bool dump_runtime(void* handle, const std::string& data_directory, const DumpOpt
     LOGI("registrations=owned-by-runtime private-registration-layout=unused");
     LOGI("stage=dump strategy=%s assemblies=%zu", image_api ? "image-API" : "managed-reflection",
          count);
-    for (const auto* assembly : snapshot) {
-        const auto* image = api.assembly_get_image(assembly);
-        const auto image_name = writer.name(api.image_get_name(image));
+    for (const auto& entry : images) {
+        const auto* image = entry.image;
+        const auto& image_name = entry.name;
         if (image_api) {
             const size_t class_count = api.image_get_class_count(image);
             if (class_count > kMaxClassesPerImage) {

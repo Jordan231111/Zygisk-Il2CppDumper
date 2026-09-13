@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -41,7 +42,8 @@ class Maps {
 // on unmapped memory, including mappings removed after the maps snapshot.
 class Memory {
   public:
-    Memory();
+    enum class Backend { Automatic, ProcMem };
+    explicit Memory(Backend backend = Backend::Automatic);
     ~Memory();
     Memory(const Memory&) = delete;
     Memory& operator=(const Memory&) = delete;
@@ -57,6 +59,8 @@ class Memory {
     }
 
   private:
-    int fd_{-1};
+    mutable int fd_{-1};
+    mutable std::once_flag open_memory_;
+    Backend backend_;
 };
 } // namespace dumper

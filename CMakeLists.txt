@@ -29,7 +29,8 @@ if(ANDROID)
     add_library(test_xdl STATIC ${native_dir}/xdl/xdl.c ${native_dir}/xdl/xdl_iterate.c
         ${native_dir}/xdl/xdl_linker.c ${native_dir}/xdl/xdl_lzma.c ${native_dir}/xdl/xdl_util.c)
     target_include_directories(test_xdl PUBLIC ${native_dir}/xdl/include)
-    foreach(fixture IN ITEMS il2cpp renamed_runtime hidden_runtime missing_runtime)
+    foreach(fixture IN ITEMS il2cpp renamed_runtime hidden_runtime missing_runtime
+            capabilities_runtime calibration_runtime)
         add_library(${fixture} SHARED tests/mock_il2cpp.cpp)
         target_include_directories(${fixture} PRIVATE ${native_dir})
         target_compile_options(${fixture} PRIVATE -Wall -Wextra -Wpedantic -Werror -fvisibility=hidden)
@@ -38,6 +39,8 @@ if(ANDROID)
     target_compile_definitions(renamed_runtime PRIVATE FIXTURE_LEGACY=1 FIXTURE_LAYOUT_WORDS=2)
     target_compile_definitions(hidden_runtime PRIVATE FIXTURE_HIDE_CORE=1)
     target_compile_definitions(missing_runtime PRIVATE FIXTURE_OMIT_CORE=1)
+    target_compile_definitions(capabilities_runtime PRIVATE FIXTURE_HIDE_CAPABILITIES=1)
+    target_compile_definitions(calibration_runtime PRIVATE FIXTURE_HIDE_CALIBRATION=1)
     add_executable(runtime_tests tests/runtime_tests.cpp ${native_dir}/il2cpp_api.cpp
         ${native_dir}/il2cpp_dump.cpp ${native_dir}/discovery.cpp)
     target_link_libraries(runtime_tests PRIVATE dumper_core test_xdl log dl)
