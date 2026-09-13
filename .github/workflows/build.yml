@@ -38,15 +38,8 @@ jobs:
           cmake --build build/host32
           ctest --test-dir build/host32 --output-on-failure --output-junit results.xml
           build/host32/core_tests --require-high-address
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: host-test-results
-          path: |
-            build/host/results.xml
-            build/host32/results.xml
-          if-no-files-found: error
   android:
+    needs: host-tests
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
@@ -121,15 +114,6 @@ jobs:
         with:
           path: out/zygisk.zip
           archive: false
-          if-no-files-found: error
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: zygisk-il2cppdumper
-          path: |
-            out/*.zip
-            module/build/reports/lint-results-debug.*
-            build/emulator.log
           if-no-files-found: error
       - name: Stop emulator
         if: always()
