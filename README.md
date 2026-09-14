@@ -1,6 +1,6 @@
 # Zygisk-Il2CppDumper
 
-Create a `dump.cs` file from an IL2CPP app. **Requires a rooted Android device with Magisk and Zygisk enabled.**
+Il2CppDumper with Zygisk, dump il2cpp data at runtime, can bypass protection, encryption and obfuscation. **Requires a rooted Android device with Magisk and Zygisk enabled.**
 
 ## How to use
 
