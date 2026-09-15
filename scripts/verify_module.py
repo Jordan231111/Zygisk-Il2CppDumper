@@ -10,6 +10,7 @@ import zipfile
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('archive', type=pathlib.Path)
 parser.add_argument('--readelf', default='llvm-readelf')
+parser.add_argument('--expect-unmount', choices=['true', 'false'], help='Check the unmount option selected for this build')
 args = parser.parse_args()
 abis = {'armeabi-v7a': (1, 40), 'arm64-v8a': (2, 183), 'x86': (1, 3), 'x86_64': (2, 62)}
 with zipfile.ZipFile(args.archive) as archive, tempfile.TemporaryDirectory() as temporary:
@@ -18,6 +19,10 @@ with zipfile.ZipFile(args.archive) as archive, tempfile.TemporaryDirectory() as 
     actual = {name for name in members if name.startswith('zygisk/') and name.endswith('.so')}
     assert actual == expected, f'Wrong ABI payloads: {actual}'
     assert 'module.prop' in members and 'META-INF/com/google/android/update-binary' in members
+    if args.expect_unmount is not None:
+        properties = dict(line.split('=', 1) for line in archive.read('module.prop').decode().splitlines()
+                          if '=' in line and not line.startswith('#'))
+        assert properties.get('unmountModules') == args.expect_unmount, 'Wrong module unmount setting'
     for abi, (elf_class, machine) in abis.items():
         raw = archive.read(f'zygisk/{abi}.so')
         assert raw[:4] == b'\x7fELF' and raw[4:6] == bytes([elf_class, 1]), abi

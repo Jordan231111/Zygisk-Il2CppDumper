@@ -7,7 +7,7 @@ Il2CppDumper with Zygisk, dump il2cpp data at runtime, can bypass protection, en
 ## How to use
 
 1. **Fork this repository**, then open **Actions → Build and test → Run workflow** in your fork. Enable workflows if GitHub asks.
-2. Enter the app's **package name** (for example, `com.example.game`) and run the workflow.
+2. Enter the app's **package name** (for example, `com.example.game`). Optionally check **Unmount module files in target apps** for apps that need it; leave it unchecked otherwise. Run the workflow.
 3. Open the successful run and download **`zygisk.zip`** from its artifacts.
 4. In **Magisk → Modules → Install from storage**, select `zygisk.zip`, then **reboot**.
 5. **Open the app** and allow the dump to finish.
@@ -45,7 +45,9 @@ python -m pip install -r requirements-dev.txt
 
 The pinned build uses AGP 9.4.0, Gradle 9.7.1, NDK r30, CMake 4.4.3 and Ninja 1.13.2. Activate the virtual environment so AGP finds the pinned CMake/Ninja on `PATH`. Windows users can activate `.venv\Scripts\activate` and invoke `gradlew.bat`.
 
-Outputs are `out/zygisk-il2cppdumper-v1.4.2-release.zip` and, for `:module:assembleDebug`, the corresponding Debug ZIP. These are Magisk modules, not APKs. Release and Debug both isolate their C++ symbols and statically link the C++ runtime. Debug retains native debugging information before AGP's packaging strip step; unstripped binaries are under `module/build/intermediates/cxx/`.
+Outputs are `out/zygisk-il2cppdumper-v1.4.3-release.zip` and, for `:module:assembleDebug`, the corresponding Debug ZIP. These are Magisk modules, not APKs. Release and Debug both isolate their C++ symbols and statically link the C++ runtime. Debug retains native debugging information before AGP's packaging strip step; unstripped binaries are under `module/build/intermediates/cxx/`.
+
+To enable the same optional unmount setting as the CI checkbox, add `-PunmountModules=true` to the build command. It defaults to `false`.
 
 Release builds also produce `out/zygisk.zip`, a byte-identical copy of the versioned Release module. Both supported build routes use the same Gradle packaging task:
 
@@ -90,12 +92,14 @@ A direct `adb push` into the module directory can leave an `adb_data_file` label
 Install from ADB on an explicitly selected device:
 
 ```sh
-adb -s DEVICE push out/zygisk-il2cppdumper-v1.4.2-release.zip /data/local/tmp/il2cppdumper.zip
+adb -s DEVICE push out/zygisk-il2cppdumper-v1.4.3-release.zip /data/local/tmp/il2cppdumper.zip
 adb -s DEVICE shell su -c 'magisk --install-module /data/local/tmp/il2cppdumper.zip'
 adb -s DEVICE reboot
 ```
 
-To request the Zygisk provider's module-mount isolation for the selected apps:
+The **Unmount module files in target apps** CI checkbox (or local `-PunmountModules=true`) sets this option when the ZIP is installed. **Each new installation applies that ZIP's selection:** an unchecked build turns it off, even if a previous install enabled it. Magisk's installation log and module description show the build's selection. It applies to all selected targets, including a `targets.txt` override.
+
+To change it after installation, the helper below also replaces the target list with the packages supplied. Force-stop and relaunch those apps afterward:
 
 ```sh
 python scripts/set_targets.py --serial DEVICE --unmount on com.example.authorizedapp
@@ -152,7 +156,7 @@ cmake --build build/host
 ctest --test-dir build/host --output-on-failure
 python scripts/check_format.py
 ./gradlew :module:assembleDebug :module:assembleRelease :module:lint --warning-mode=fail
-python scripts/verify_module.py out/zygisk-il2cppdumper-v1.4.2-release.zip \
+python scripts/verify_module.py out/zygisk-il2cppdumper-v1.4.3-release.zip \
   --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 ```
 

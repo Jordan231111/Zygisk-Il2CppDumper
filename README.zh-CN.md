@@ -7,7 +7,7 @@
 ## 使用步骤
 
 1. **Fork 本仓库**，然后在你的 Fork 中打开 **Actions → Build and test → Run workflow**。如果 GitHub 提示，请先启用 workflows。
-2. 输入应用的**包名**（例如 `com.example.game`），然后运行工作流。
+2. 输入应用的**包名**（例如 `com.example.game`）。有需要时可勾选 **Unmount module files in target apps**（卸载目标应用中的模块挂载），否则保持未勾选，然后运行工作流。
 3. 打开成功的运行记录，从 artifacts 中下载 **`zygisk.zip`**。
 4. 在 **Magisk → 模块 → 从本地安装** 中选择 `zygisk.zip`，然后**重启设备**。
 5. **打开目标应用**，等待导出完成。
@@ -45,7 +45,9 @@ python -m pip install -r requirements-dev.txt
 
 固定版本构建使用 AGP 9.4.0、Gradle 9.7.1、NDK r30、CMake 4.4.3 和 Ninja 1.13.2。请激活虚拟环境，以便 AGP 能在 `PATH` 中找到固定版本的 CMake/Ninja。Windows 用户可以激活 `.venv\Scripts\activate` 并调用 `gradlew.bat`。
 
-输出为 `out/zygisk-il2cppdumper-v1.4.2-release.zip`，`:module:assembleDebug` 则对应 Debug 版 ZIP。这些都是 Magisk 模块，不是 APK。Release 和 Debug 都会隔离各自的 C++ 符号并静态链接 C++ 运行时。Debug 在 AGP 打包剥离步骤之前保留原生调试信息；未剥离的二进制文件位于 `module/build/intermediates/cxx/` 下。
+输出为 `out/zygisk-il2cppdumper-v1.4.3-release.zip`，`:module:assembleDebug` 则对应 Debug 版 ZIP。这些都是 Magisk 模块，不是 APK。Release 和 Debug 都会隔离各自的 C++ 符号并静态链接 C++ 运行时。Debug 在 AGP 打包剥离步骤之前保留原生调试信息；未剥离的二进制文件位于 `module/build/intermediates/cxx/` 下。
+
+如需启用与 CI 复选框相同的可选卸载设置，请在构建命令中添加 `-PunmountModules=true`。默认值为 `false`。
 
 Release 构建还会生成 `out/zygisk.zip`，它是带版本号的 Release 模块的字节一致副本。两种支持的构建方式使用同一个 Gradle 打包任务：
 
@@ -90,12 +92,14 @@ python scripts/set_targets.py --serial DEVICE com.example.gameone com.example.ga
 在明确选定的设备上通过 ADB 安装：
 
 ```sh
-adb -s DEVICE push out/zygisk-il2cppdumper-v1.4.2-release.zip /data/local/tmp/il2cppdumper.zip
+adb -s DEVICE push out/zygisk-il2cppdumper-v1.4.3-release.zip /data/local/tmp/il2cppdumper.zip
 adb -s DEVICE shell su -c 'magisk --install-module /data/local/tmp/il2cppdumper.zip'
 adb -s DEVICE reboot
 ```
 
-如需为所选应用请求 Zygisk 提供者的模块挂载隔离：
+CI 中的 **Unmount module files in target apps** 复选框（或本地的 `-PunmountModules=true`）会在安装 ZIP 时设置该选项。**每次新安装都以该 ZIP 的选择为准：**安装未勾选的构建会关闭此选项，即使之前已启用。Magisk 安装日志和模块说明会显示构建时的选择。该选项作用于所有选定的目标，包括 `targets.txt` 覆盖列表中的应用。
+
+如需在安装后修改，可使用下面的辅助脚本。该命令也会用传入的包名替换目标列表；修改后请强制停止并重新启动这些应用：
 
 ```sh
 python scripts/set_targets.py --serial DEVICE --unmount on com.example.authorizedapp
@@ -152,7 +156,7 @@ cmake --build build/host
 ctest --test-dir build/host --output-on-failure
 python scripts/check_format.py
 ./gradlew :module:assembleDebug :module:assembleRelease :module:lint --warning-mode=fail
-python scripts/verify_module.py out/zygisk-il2cppdumper-v1.4.2-release.zip \
+python scripts/verify_module.py out/zygisk-il2cppdumper-v1.4.3-release.zip \
   --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 ```
 

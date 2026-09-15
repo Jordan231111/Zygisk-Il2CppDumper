@@ -8,6 +8,11 @@ on:
         description: App package name (example com.example.game)
         required: true
         type: string
+      unmount_modules:
+        description: Unmount module files in target apps (may affect other modules)
+        required: false
+        default: false
+        type: boolean
       full_validation:
         description: Run maintainer tests, Debug/lint and emulator checks (slower)
         required: false
@@ -52,6 +57,7 @@ jobs:
     timeout-minutes: 25
     env:
       TARGET_PACKAGE: ${{ inputs.package_name || 'com.game.packagename' }}
+      UNMOUNT_MODULES: ${{ inputs.unmount_modules && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,15 +99,15 @@ jobs:
           done
       - name: Build Release module
         if: github.event_name == 'workflow_dispatch' && !inputs.full_validation
-        run: ./gradlew ":module:assembleRelease" "-PtargetPackage=$TARGET_PACKAGE" --warning-mode=fail --console=plain
+        run: ./gradlew ":module:assembleRelease" "-PtargetPackage=$TARGET_PACKAGE" "-PunmountModules=$UNMOUNT_MODULES" --warning-mode=fail --console=plain
       - name: Build Debug, Release and Android lint
         if: github.event_name != 'workflow_dispatch' || inputs.full_validation
-        run: ./gradlew ":module:assembleDebug" ":module:assembleRelease" ":module:lint" "-PtargetPackage=$TARGET_PACKAGE" --warning-mode=fail --console=plain
+        run: ./gradlew ":module:assembleDebug" ":module:assembleRelease" ":module:lint" "-PtargetPackage=$TARGET_PACKAGE" "-PunmountModules=$UNMOUNT_MODULES" --warning-mode=fail --console=plain
       - name: Verify installable module
-        run: python scripts/verify_module.py out/zygisk.zip --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+        run: python scripts/verify_module.py out/zygisk.zip --expect-unmount "$UNMOUNT_MODULES" --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
       - name: Verify Debug module
         if: github.event_name != 'workflow_dispatch' || inputs.full_validation
-        run: python scripts/verify_module.py out/*-debug.zip --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+        run: python scripts/verify_module.py out/*-debug.zip --expect-unmount "$UNMOUNT_MODULES" --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
       - name: Build synthetic Android runtime tests
         if: github.event_name != 'workflow_dispatch' || inputs.full_validation
         run: |

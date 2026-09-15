@@ -204,7 +204,7 @@ cmake -S . -B build/host -G Ninja -DCMAKE_BUILD_TYPE=Debug -DDUMPER_SANITIZERS=O
 cmake --build build/host
 ctest --test-dir build/host --output-on-failure
 python scripts/check_format.py
-python scripts/verify_module.py out/zygisk-il2cppdumper-v1.4.2-release.zip --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+python scripts/verify_module.py out/zygisk.zip --readelf "$ANDROID_HOME/ndk/30.0.16248370/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 ```
 
 For native device tests, substitute the device ABI and use `darwin-x86_64` for NDK executable paths on macOS:
@@ -243,7 +243,7 @@ Real Zygisk tests additionally require a correctly installed/rooted provider; sy
 Install, select targets, enable verbose logs and collect a completed dump:
 
 ```sh
-adb -s DEVICE push out/zygisk-il2cppdumper-v1.4.2-release.zip /data/local/tmp/il2cppdumper.zip
+adb -s DEVICE push out/zygisk.zip /data/local/tmp/il2cppdumper.zip
 adb -s DEVICE shell su -c 'magisk --install-module /data/local/tmp/il2cppdumper.zip'
 # Enable Zygisk in the chosen manager/provider, then reboot.
 adb -s DEVICE reboot

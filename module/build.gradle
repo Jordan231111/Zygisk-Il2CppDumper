@@ -10,6 +10,10 @@ def targetPackage = providers.gradleProperty('targetPackage').orElse('com.game.p
 if (!(targetPackage ==~ /[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+/)) {
     throw new GradleException('targetPackage must be an Android package name')
 }
+def unmountModules = providers.gradleProperty('unmountModules').orElse('false').get()
+if (!(unmountModules in ['true', 'false'])) {
+    throw new GradleException('unmountModules must be true or false')
+}
 
 android {
     namespace = 'zygisk.il2cppdumper'
@@ -49,6 +53,7 @@ androidComponents {
         def stage = rootProject.layout.buildDirectory.dir("magisk/${variant.name}")
         def prepare = tasks.register("prepareMagiskFiles${suffix}", Sync) {
             dependsOn(aar)
+            inputs.property('unmountModules', unmountModules)
             into(stage)
             from(rootProject.file('template/magisk_module')) {
                 exclude 'module.prop'
@@ -56,7 +61,8 @@ androidComponents {
             from(rootProject.file('template/magisk_module/module.prop')) {
                 expand(id: magiskModuleId, name: moduleName, version: moduleVersion,
                         versionCode: moduleVersionCode, author: moduleAuthor,
-                        description: "${moduleDescription} Default target: ${targetPackage}.")
+                        unmountModules: unmountModules,
+                        description: "${moduleDescription} Default target: ${targetPackage}. Unmount on install: ${unmountModules == 'true' ? 'on' : 'off'}.")
                 filter(FixCrLfFilter, eol: FixCrLfFilter.CrLf.newInstance('lf'))
             }
             from(aar.map { zipTree(it) }) {
